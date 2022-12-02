@@ -2,3 +2,13 @@
 .idea/
 
 *.pyc
+
+data/
+
+sign_sample_model/
+
+experiment_results/
+
+training_task/
+
+base_annotations/

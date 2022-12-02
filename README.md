@@ -38,3 +38,31 @@ Please cite the paper below if you use this code in your research:
 
 ## Acknowledgements
 <sub>This work was funded by the SNSF Sinergia project "Scalable Multimodal Sign Language Technology for Sign Language Learning and Assessment" (SMILE) grant agreement number CRSII2 160811 and the European Union’s Horizon2020 research and innovation programme under grant agreement no. 762021 (Content4All). This work reflects only the author’s view and the Commission is not responsible for any use that may be made of the information it contains. We would also like to thank NVIDIA Corporation for their GPU grant. </sub>
+
+
+
+aa/fe/b11a9d0e8699dfe94dba211265805b0ea8f4188bf175be8665110fb9f5e4
+
+
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn torch==1.4.0 torchvision==0.5.0
+
+cd /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/video2tensor
+
+python video2tensor.py --start_index 0000 \
+        --csv_file /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/annotations/manual/PHOENIX-2014-T.train.corpus.csv \
+        --video_root_path /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/features/fullFrame-210x260px \
+        --split_name train \
+        --output_path /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/features
+
+
+export PATH=/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/anaconda3_old/envs/SLT_1116/bin/:$PATH
+cd /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT
+
+python signjoey/training.py --config /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/configs/jizhi/default.yaml
+
+
+python signjoey train configs/sign.yaml
+
+
+--start_index 0000 --csv_file /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/annotations/manual/PHOENIX-2014-T.test.corpus.csv --video_root_path /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/features/fullFrame-210x260px --split_name test --output_path /apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/RetsetNet
+

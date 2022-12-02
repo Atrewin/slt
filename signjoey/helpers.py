@@ -17,7 +17,8 @@ import numpy as np
 
 import torch
 from torch import nn, Tensor
-from torchtext.data import Dataset
+# from torchtext.data import Dataset # @
+from torch.utils.data import Dataset
 import yaml
 from signjoey.vocabulary import GlossVocabulary, TextVocabulary
 
@@ -266,3 +267,66 @@ def symlink_update(target, link_name):
             os.symlink(target, link_name)
         else:
             raise e
+
+
+
+# @jinhui
+import os
+
+def mkdir(path):
+    folder = os.path.exists(path)
+
+    if not folder:  # 判断是否存在文件夹如果不存在则创建为文件夹
+        os.makedirs(path)  # makedirs 创建文件时如果路径不存在会创建这个路径
+        print("---  new folder...  ---")
+
+        print("---  OK  ---")
+
+    else:
+        print("---  There is this folder!  ---")
+
+def add_project_root():
+    import sys
+    from os.path import abspath, join, dirname
+    sys.path.insert(0, join(abspath(dirname(__file__)), '..'))
+import json
+def save_to_json(obj,filepath=".",  filename="1.json", ):
+    filename = os.path.join(filepath,filename)
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(obj,f, ensure_ascii=False)
+
+
+def load_json(path):
+    with open(path, 'r', encoding="utf-8") as load_f:
+        load_dict = json.load(load_f)
+
+    return load_dict
+
+def read_all_dataset(filename):
+    with open(filename, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    for index, line in enumerate(lines):
+        if line[-1] == "\n":
+            lines[index] = line[0:-1]
+
+    return lines
+
+
+def writer2text(data_rows: [], file_path="try.txt", mode="w"):
+
+    with open(file_path, mode, newline="", encoding="utf-8") as f:
+
+        for row in data_rows:
+            row = str(row)
+            row = row.strip("\n")
+            if len(row) == 0 or row[-1] != "\n":
+                f.write("{}\n".format(row))
+            else:
+                f.write(row)
+import pandas as pd
+def read_csv_file(file_path=""):
+
+    df = pd.read_csv(file_path, encoding="utf-8")
+
+    return df

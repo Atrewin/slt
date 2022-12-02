@@ -3,6 +3,7 @@
 Data module
 """
 from torchtext import data
+# from torchtext.data import Field, RawField
 from torchtext.data import Field, RawField
 from typing import List, Tuple
 import pickle
@@ -11,11 +12,17 @@ import torch
 
 
 def load_dataset_file(filename):
-    with gzip.open(filename, "rb") as f:
-        loaded_object = pickle.load(f)
-        return loaded_object
 
+    if "pickle" not in filename[-6:]:
 
+        with gzip.open(filename, "rb") as f:
+            loaded_object = pickle.load(f)
+
+    else:
+
+        with open(filename, 'rb') as fr:
+            loaded_object = pickle.load(fr)
+    return loaded_object
 class SignTranslationDataset(data.Dataset):
     """Defines a dataset for machine translation."""
 
@@ -62,8 +69,7 @@ class SignTranslationDataset(data.Dataset):
                     assert samples[seq_id]["gloss"] == s["gloss"]
                     assert samples[seq_id]["text"] == s["text"]
                     samples[seq_id]["sign"] = torch.cat(
-                        [samples[seq_id]["sign"], s["sign"]], axis=1
-                    )
+                        [samples[seq_id]["sign"], s["sign"]], axis=1)
                 else:
                     samples[seq_id] = {
                         "name": s["name"],

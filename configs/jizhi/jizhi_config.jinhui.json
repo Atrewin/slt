@@ -1,0 +1,12 @@
+{
+   "readable_name": "SLT",
+   "Token": "9JrhxNUKj4k52bXkJQBHoA",
+   "business_flag": "nlpc",
+   "model_local_file_path": "/apdcephfs/share_916081/jinhuiye/Projects/slt/configs/jizhi",
+   "host_num": 1,
+   "host_gpu_num": 1,
+   "image_full_name": "mirrors.tencent.com/ychao/general:latest",
+   "is_elasticity": false,
+   "keep_alive": true,
+   "enable_evicted_pulled_up": true
+}
