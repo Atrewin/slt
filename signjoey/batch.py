@@ -14,7 +14,8 @@ class Batch:
         self,
         torch_batch,
         txt_pad_index,
-        sgn_dim,
+        gla_pad_index=2,
+        sgn_dim = 256,
         is_train: bool = False,
         use_cuda: bool = False,
         frame_subsampling_ratio: int = None,
@@ -86,6 +87,9 @@ class Batch:
         # Gloss
         self.gls = None
         self.gls_lengths = None
+        # @jinhui
+        self.gls_mask = None
+        self.gls_input = None
 
         # Other
         self.num_txt_tokens = None
@@ -105,8 +109,17 @@ class Batch:
             self.num_txt_tokens = (self.txt != txt_pad_index).data.sum().item()
 
         if hasattr(torch_batch, "gls"):
-            self.gls, self.gls_lengths = torch_batch.gls
-            self.num_gls_tokens = self.gls_lengths.sum().detach().clone().numpy()
+            gls, gls_lengths = torch_batch.gls
+            #self.num_gls_tokens = gls_lengths.sum().detach().clone().numpy()
+            # @jinhui
+
+            self.gls_input = gls
+            self.gls_lengths = gls_lengths
+
+            self.gls = gls
+            # we exclude the padded areas from the loss computation
+            self.gls_mask = (self.gls_input != gla_pad_index).unsqueeze(1)
+            self.num_gls_tokens = (self.gls != gla_pad_index).data.sum().item()
 
         if use_cuda:
             self._make_cuda()
@@ -124,6 +137,11 @@ class Batch:
             self.txt = self.txt.cuda()
             self.txt_mask = self.txt_mask.cuda()
             self.txt_input = self.txt_input.cuda()
+
+        if self.gls_input is not None:
+            self.gls = self.gls.cuda()
+            self.gls_mask = self.gls_mask.cuda()
+            self.gls_input = self.gls_input.cuda()
 
     def sort_by_sgn_lengths(self):
         """
@@ -146,6 +164,9 @@ class Batch:
         if self.gls is not None:
             self.gls = self.gls[perm_index]
             self.gls_lengths = self.gls_lengths[perm_index]
+
+            self.gls_mask = self.gls_mask[perm_index]
+            self.gls_input = self.gls_input[perm_index]
 
         if self.txt is not None:
             self.txt = self.txt[perm_index]

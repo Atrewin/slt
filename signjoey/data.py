@@ -96,11 +96,12 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         pad_token=torch.zeros((pad_feature_size,)),
     )
 
-    gls_field = data.Field(
+    gls_field = data.Field( # 返回的是 bacth 以及原本的长度
         pad_token=PAD_TOKEN,
+        unk_token=UNK_TOKEN,
         tokenize=tokenize_text,
         batch_first=True,
-        lower=False,
+        lower=True,
         include_lengths=True,
     )
 
@@ -114,8 +115,7 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         lower=txt_lowercase,
         include_lengths=True,
     )
-
-    train_data = SignTranslationDataset(
+    train_data = SignTranslationDataset( #出来的还是原始数据，在dataset 进一步处理？
         path=train_paths,
         fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
         filter_pred=lambda x: len(vars(x)["sgn"]) <= max_sent_length

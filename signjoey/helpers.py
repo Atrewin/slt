@@ -330,3 +330,9 @@ def read_csv_file(file_path=""):
     df = pd.read_csv(file_path, encoding="utf-8")
 
     return df
+
+def add_project_root(): #@jinhui
+    import sys
+    from os.path import abspath, join, dirname
+    sys.path.insert(0, abspath(join(abspath(dirname(__file__)), '../')))
+

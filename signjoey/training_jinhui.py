@@ -1,13 +1,22 @@
 #!/usr/bin/env python
-def add_project_root():
+def add_project_root(): #@jinhui
     import sys
     from os.path import abspath, join, dirname
     sys.path.insert(0, abspath(join(abspath(dirname(__file__)), '../')))
+
 add_project_root()
 
 import torch
 
 torch.backends.cudnn.deterministic = True
+
+import tensorflow as tf
+
+tf.config.set_visible_devices([], "GPU")
+
+import numpy as np
+import torch.nn as nn
+import torch.nn.functional as F
 
 import argparse
 import numpy as np
@@ -15,7 +24,9 @@ import os
 import shutil
 import time
 import queue
-
+import numpy as np
+import torch.nn as nn
+import torch.nn.functional as F
 from signjoey.model import build_model
 from signjoey.batch import Batch
 from signjoey.helpers import (
@@ -28,18 +39,19 @@ from signjoey.helpers import (
     set_seed,
     symlink_update,
 )
-from signjoey.model import SignModel
-from signjoey.prediction import validate_on_data
+from signjoey.model import SignModel, SignMixupModel
+from signjoey.prediction_jinhui import validate_on_data
 from signjoey.loss import XentLoss
 from signjoey.data import load_data, make_data_iter
 from signjoey.builders import build_optimizer, build_scheduler, build_gradient_clipper
-from signjoey.prediction import test
+from signjoey.prediction_jinhui import test
 from signjoey.metrics import wer_single
 from signjoey.vocabulary import SIL_TOKEN
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 from torchtext.data import Dataset
 from typing import List, Dict
+from signjoey.model import build_model_mixup
 
 
 # pylint: disable=too-many-instance-attributes
@@ -47,7 +59,7 @@ class TrainManager:
     """ Manages training loop, validations, learning rate scheduling
     and early stopping."""
 
-    def __init__(self, model: SignModel, config: dict) -> None:
+    def __init__(self, model: SignMixupModel, config: dict) -> None:
         """
         Creates a new TrainManager for a model, specified as in configuration.
 
@@ -55,7 +67,7 @@ class TrainManager:
         :param config: dictionary containing the training configurations
         """
         train_config = config["training"]
-
+        self.config = config
         # files for logging and storing
         self.model_dir = make_model_dir(
             model_dir=train_config["model_dir"], overwrite=train_config.get("overwrite", False)
@@ -385,6 +397,7 @@ class TrainManager:
                     is_train=True,
                     torch_batch=batch,
                     txt_pad_index=self.txt_pad_index,
+                    gla_pad_index=self.model.gls_pad_index,
                     sgn_dim=self.feature_size,
                     use_cuda=self.use_cuda,
                     frame_subsampling_ratio=self.frame_subsampling_ratio,
@@ -468,6 +481,7 @@ class TrainManager:
                     #   Hmm... Future Cihan's problem.
                     val_res = validate_on_data(
                         model=self.model,
+                        forward_type=self.config["testing"]["forward_type"],
                         data=valid_data,
                         batch_size=self.eval_batch_size,
                         use_cuda=self.use_cuda,
@@ -731,6 +745,289 @@ class TrainManager:
         )
 
         self.tb_writer.close()  # close Tensorboard writer
+    def get_loss_for_batch_modalityMultitask(
+        self,
+        batch: Batch,
+        recognition_loss_function: nn.Module,
+        translation_loss_function: nn.Module,
+        recognition_loss_weight: float,
+        translation_loss_weight: float,
+        forward_type=None,
+    ) -> (Tensor, Tensor):
+        """
+        Compute non-normalized loss and number of tokens for a batch
+
+        :param batch: batch to compute loss for
+        :param recognition_loss_function: Sign Language Recognition Loss Function (CTC)
+        :param translation_loss_function: Sign Language Translation Loss Function (XEntropy)
+        :param recognition_loss_weight: Weight for recognition loss
+        :param translation_loss_weight: Weight for translation loss
+        :return: recognition_loss: sum of losses over sequences in the batch
+        :return: translation_loss: sum of losses over non-pad elements in the batch
+        """
+        # pylint: disable=unused-variable
+
+        # Do a forward pass @jinhui 这里需不需要解构责任  12.03 => 控制变量和方法只是实现方式，分支来源才是责任人
+        # TODO get gloss forward
+        decoder_outputs_glsbase, gloss_probabilities_glsbase = self.model.forward(
+            sgn=batch.gls_input,
+            sgn_mask=batch.gls_mask,
+            sgn_lengths=batch.gls_lengths,
+            txt_input=batch.txt_input,
+            txt_mask=batch.txt_mask,
+            forword_type = "gloss"
+        )
+        # 写控制操作不应该放到这里，应该交给 trainer
+        if self.do_recognition:
+            assert gloss_probabilities_glsbase is not None
+            # Calculate Recognition Loss
+            recognition_loss_glsbase = (
+                recognition_loss_function(
+                    gloss_probabilities_glsbase,
+                    batch.gls,
+                    batch.gls_lengths.long(),
+                    batch.gls_lengths.long(),
+                )
+                * recognition_loss_weight
+            )
+        else:
+            recognition_loss_glsbase = None
+
+        if self.do_translation:
+            assert decoder_outputs_glsbase is not None
+            word_outputs_glsbase, _, _, _ = decoder_outputs_glsbase
+            # Calculate Translation Loss
+            txt_log_probs_glsbase = F.log_softmax(word_outputs_glsbase, dim=-1)
+            translation_loss_glsbase = (
+                translation_loss_function(txt_log_probs_glsbase, batch.txt)
+                * translation_loss_weight
+            )
+        else:
+            translation_loss_glsbase = None
+
+        #TODO get sign forward
+        decoder_outputs_sgnBase, gloss_probabilities_sgnBase = self.model.forward(
+            sgn=batch.sgn,
+            sgn_mask=batch.sgn_mask,
+            sgn_lengths=batch.sgn_lengths,
+            txt_input=batch.txt_input,
+            txt_mask=batch.txt_mask,
+        )
+
+        if self.do_recognition:
+            assert gloss_probabilities_sgnBase is not None
+            # Calculate Recognition Loss
+            recognition_loss_sgnBase = (
+                    recognition_loss_function(
+                        gloss_probabilities_sgnBase,
+                        batch.gls,
+                        batch.sgn_lengths.long(),
+                        batch.gls_lengths.long(),
+                    )
+                    * recognition_loss_weight
+            )
+        else:
+            recognition_loss_sgnBase = None
+
+        if self.do_translation:
+            assert decoder_outputs_sgnBase is not None
+            word_outputs_sgnBase, _, _, _ = decoder_outputs_sgnBase
+            # Calculate Translation Loss
+            txt_log_probs_sgnBase = F.log_softmax(word_outputs_sgnBase, dim=-1)
+            translation_loss_sgnBase = (
+                    translation_loss_function(txt_log_probs_sgnBase, batch.txt)
+                    * translation_loss_weight
+            )
+        else:
+            translation_loss_sgnBase = None
+
+        return recognition_loss_glsbase + recognition_loss_sgnBase, translation_loss_glsbase + translation_loss_sgnBase
+
+    def get_loss_for_mixup(
+        self,
+        batch: Batch,
+        recognition_loss_function: nn.Module,
+        translation_loss_function: nn.Module,
+        recognition_loss_weight: float,
+        translation_loss_weight: float,
+        forward_type=None,
+    ) -> (Tensor, Tensor):
+        """
+        Compute non-normalized loss and number of tokens for a batch
+
+        :param batch: batch to compute loss for
+        :param recognition_loss_function: Sign Language Recognition Loss Function (CTC)
+        :param translation_loss_function: Sign Language Translation Loss Function (XEntropy)
+        :param recognition_loss_weight: Weight for recognition loss
+        :param translation_loss_weight: Weight for translation loss
+        :return: recognition_loss: sum of losses over sequences in the batch
+        :return: translation_loss: sum of losses over non-pad elements in the batch
+        """
+        # pylint: disable=unused-variable
+
+        # Do a forward pass @jinhui 这里需不需要解构责任  12.03 => 控制变量和方法只是实现方式，分支来源才是责任人
+        # TODO get gloss forward
+        decoder_outputs_glsbase, gloss_probabilities_glsbase = self.model.forward(
+            sgn=batch.gls_input,
+            sgn_mask=batch.gls_mask,
+            sgn_lengths=batch.gls_lengths,
+            txt_input=batch.txt_input,
+            txt_mask=batch.txt_mask,
+            forword_type = "gloss"
+        )
+        # 写控制操作不应该放到这里，应该交给 trainer
+        if self.do_recognition:
+            assert gloss_probabilities_glsbase is not None
+            # Calculate Recognition Loss
+            recognition_loss_glsbase = (
+                recognition_loss_function(
+                    gloss_probabilities_glsbase,
+                    batch.gls,
+                    batch.gls_lengths.long(),
+                    batch.gls_lengths.long(),
+                )
+                * recognition_loss_weight
+            )
+        else:
+            recognition_loss_glsbase = None
+
+        if self.do_translation:
+            assert decoder_outputs_glsbase is not None
+            word_outputs_glsbase, _, _, _ = decoder_outputs_glsbase
+            # Calculate Translation Loss
+            txt_log_probs_glsbase = F.log_softmax(word_outputs_glsbase, dim=-1)
+            translation_loss_glsbase = (
+                translation_loss_function(txt_log_probs_glsbase, batch.txt)
+                * translation_loss_weight
+            )
+        else:
+            translation_loss_glsbase = None
+
+        #TODO get sign forward
+        decoder_outputs_sgnBase, gloss_probabilities_sgnBase = self.model.forward(
+            sgn=batch.sgn,
+            sgn_mask=batch.sgn_mask,
+            sgn_lengths=batch.sgn_lengths,
+            txt_input=batch.txt_input,
+            txt_mask=batch.txt_mask,
+        )
+
+        if self.do_recognition:
+            assert gloss_probabilities_sgnBase is not None
+            # Calculate Recognition Loss
+            recognition_loss_sgnBase = (
+                    recognition_loss_function(
+                        gloss_probabilities_sgnBase,
+                        batch.gls,
+                        batch.sgn_lengths.long(),
+                        batch.gls_lengths.long(),
+                    )
+                    * recognition_loss_weight
+            )
+        else:
+            recognition_loss_sgnBase = None
+
+        if self.do_translation:
+            assert decoder_outputs_sgnBase is not None
+            word_outputs_sgnBase, _, _, _ = decoder_outputs_sgnBase
+            # Calculate Translation Loss
+            txt_log_probs_sgnBase = F.log_softmax(word_outputs_sgnBase, dim=-1)
+            translation_loss_sgnBase = (
+                    translation_loss_function(txt_log_probs_sgnBase, batch.txt)
+                    * translation_loss_weight
+            )
+        else:
+            translation_loss_sgnBase = None
+
+
+        # TODO find frame gloss aligner #@jinhui 没有做梯度隔离
+        # T x N x C
+        gloss_probabilities = gloss_probabilities_sgnBase
+        # Turn it into N x T x C
+        gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
+
+        # T x N
+        gloss_predict = torch.argmax(gloss_probabilities, dim=-1) # 可以是可以，但是没有CTC
+
+        #　TODO get mixup embedding
+        glosses_embedding = self.model.gloss_embed(x=gloss_predict, mask=batch.sgn_mask)
+        sign_embedding = self.model.sgn_embed(x=batch.sgn, mask=batch.sgn_mask)
+        # @https://blog.csdn.net/weixin_44575152/article/details/123880800
+        mix_mask_sgn = gloss_predict.ge(0.2)
+        mix_mask_gloss = ~mix_mask_sgn
+        cc = torch.stack((mix_mask_sgn, mix_mask_gloss), dim=1).permute(0, 2, 1) # N, T, 2
+        xx = torch.stack((sign_embedding, glosses_embedding), dim=2)
+        bb = xx.permute(3, 0, 1, 2)
+        shape_x = bb.shape
+        mix_sign_embedding = torch.masked_select(bb, cc).reshape(shape_x[0:-1]).permute(1, 2, 0) # 这样的 杂交其实复炸，而且不知道是否正确
+
+        # TODO Forward
+        encoder_output, encoder_hidden = self.model.encode(
+            sgn=mix_sign_embedding, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
+        )
+
+        if self.do_translation:
+            unroll_steps = batch.txt_input.size(1)
+            decoder_outputs_mixBase = self.model.decode(
+                encoder_output=encoder_output,
+                encoder_hidden=encoder_hidden,
+                sgn_mask=batch.sgn_mask,
+                txt_input=batch.txt_input,
+                unroll_steps=unroll_steps,
+                txt_mask=batch.txt_mask,
+            )
+        else:
+            decoder_outputs_mixBase = None
+
+        if self.do_translation:
+            assert decoder_outputs_mixBase is not None
+            word_outputs_mixBase, _, _, _ = decoder_outputs_mixBase
+            # Calculate Translation Loss
+            txt_log_probs_mixBase = F.log_softmax(word_outputs_mixBase, dim=-1)
+            translation_loss_mixBase = (
+                    translation_loss_function(txt_log_probs_mixBase, batch.txt)
+                    * translation_loss_weight
+            )
+        else:
+            translation_loss_mixBase = None
+
+        return recognition_loss_glsbase + recognition_loss_sgnBase, translation_loss_glsbase + translation_loss_sgnBase + translation_loss_mixBase
+
+        # if self.do_recognition:
+        #     # Gloss Recognition Part
+        #     # N x T x C
+        #     gloss_scores = self.gloss_output_layer(encoder_output)
+        #     # N x T x C
+        #     gloss_probabilities = gloss_scores.log_softmax(2)
+        #     # Turn it into T x N x C
+        #     gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
+        #     gloss_probabilities = gloss_probabilities.cpu().detach().numpy()
+        #     tf_gloss_probabilities = np.concatenate(
+        #         (gloss_probabilities[:, :, 1:], gloss_probabilities[:, :, 0, None]),
+        #         axis=-1,
+        #     )
+        #
+        #     assert recognition_beam_size > 0
+        #     ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
+        #         inputs=tf_gloss_probabilities,
+        #         sequence_length=x_lengths.cpu().detach().numpy(),
+        #         beam_width=recognition_beam_size,
+        #         top_paths=1,
+        #     )
+        #     ctc_decode = ctc_decode[0]
+        #     # Create a decoded gloss list for each sample
+        #     tmp_gloss_sequences = [[] for i in range(gloss_scores.shape[0])]
+        #     for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
+        #         tmp_gloss_sequences[dense_idx[0]].append(
+        #             ctc_decode.values[value_idx].numpy() + 1
+        #         )
+        #     decoded_gloss_sequences = []
+        #     for seq_idx in range(0, len(tmp_gloss_sequences)):
+        #         decoded_gloss_sequences.append(
+        #             [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
+        #         )
+        # else:
+        #     decoded_gloss_sequences = None
 
     def _train_batch(self, batch: Batch, update: bool = True) -> (Tensor, Tensor):
         """
@@ -741,9 +1038,21 @@ class TrainManager:
         :return normalized_recognition_loss: Normalized recognition loss
         :return normalized_translation_loss: Normalized translation loss
         """
+        forward_type = self.config["training"]["forward_type"]
+        # forward_function = self.model.get_loss_for_batch_byG
+        if forward_type == "gloss" or forward_type == "sign":
+            forward_function = self.model.get_loss_for_batch
+        elif forward_type == "modalityMuiltask":
+            forward_function = self.get_loss_for_batch_modalityMultitask
+        elif forward_type == "mixup":
+            forward_function = self.get_loss_for_mixup
 
-        recognition_loss, translation_loss = self.model.get_loss_for_batch(
+        else:
+            raise NotImplementedError("Not {} forward process".format(forward_type))
+
+        recognition_loss, translation_loss = forward_function(
             batch=batch,
+            forward_type=forward_type,
             recognition_loss_function=self.recognition_loss_function
             if self.do_recognition
             else None,
@@ -757,7 +1066,6 @@ class TrainManager:
             if self.do_translation
             else None,
         )
-
         # normalize translation loss
         if self.do_translation:
             if self.translation_normalization_mode == "batch":
@@ -987,7 +1295,7 @@ def train(cfg_file: str) -> None:
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
-    model = build_model(
+    model = build_model_mixup(
         cfg=cfg["model"],
         gls_vocab=gls_vocab,
         txt_vocab=txt_vocab,
@@ -1036,6 +1344,7 @@ def train(cfg_file: str) -> None:
     output_path = os.path.join(trainer.model_dir, output_name)
     logger = trainer.logger
     del trainer
+    print(ckpt)
     test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
 
 

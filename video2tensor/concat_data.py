@@ -54,15 +54,36 @@ def main(data_path=None, tip_str="", output_path="./"):
         with open(save_path, "wb") as list_file:
             pickle.dump(data_list_deplicated, list_file)
 
-
-
-
-
-
-
-
-
     pass
+import copy
+from signjoey.dataset import load_dataset_file
+from signjoey.helpers import read_all_dataset
+def teacher_model_data_build(path=None):
+    embedded_file= "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/phoenix14t.pami0.train"
+    teacher_target_file = "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/ensemble_de.txt"
+    target_file = "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/target.txt"
+
+    raw_datas = load_dataset_file(filename=embedded_file)
+
+    teacher_target = read_all_dataset(filename=teacher_target_file)
+    target = read_all_dataset(filename=target_file)
+    assert len(raw_datas) == len(teacher_target) and len(teacher_target) == len(target)
+    print(" ")
+
+    for index in range(len(teacher_target)):
+        target_text = target[index]
+        output_text = raw_datas[index]["text"]
+        new_taget_text = teacher_target[index]
+        if output_text[0:-2] == target_text:
+            new_sample = copy.deepcopy(raw_datas[index])
+            new_sample["text"] = new_taget_text + " ."
+            new_sample["name"] = new_sample["name"] + "_teacher"
+            raw_datas.append(new_sample)
+
+
+    save_path = embedded_file + "_Teacher_DA_" + ".pickle"
+    with open(save_path, "wb") as list_file:
+        pickle.dump(raw_datas, list_file)
 
 import argparse
 if __name__ == '__main__':
@@ -84,9 +105,10 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
+    #
+    # main(data_path=args.data_root_path, tip_str="train", output_path=args.output_path)
 
-    main(data_path=args.data_root_path, tip_str="train", output_path=args.output_path)
-
+    teacher_model_data_build()
 
 
 

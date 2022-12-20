@@ -14,15 +14,13 @@ import torch
 def load_dataset_file(filename):
 
     if "pickle" not in filename[-6:]:
-
         with gzip.open(filename, "rb") as f:
             loaded_object = pickle.load(f)
-
     else:
-
         with open(filename, 'rb') as fr:
             loaded_object = pickle.load(fr)
     return loaded_object
+
 class SignTranslationDataset(data.Dataset):
     """Defines a dataset for machine translation."""
 
@@ -63,7 +61,7 @@ class SignTranslationDataset(data.Dataset):
             tmp = load_dataset_file(annotation_file)
             for s in tmp:
                 seq_id = s["name"]
-                if seq_id in samples:
+                if seq_id in samples: #@jinhui 我觉得不应该合并数据 原作者探索过feature cat
                     assert samples[seq_id]["name"] == s["name"]
                     assert samples[seq_id]["signer"] == s["signer"]
                     assert samples[seq_id]["gloss"] == s["gloss"]
