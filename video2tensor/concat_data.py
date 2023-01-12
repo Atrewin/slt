@@ -62,26 +62,36 @@ def teacher_model_data_build(path=None):
     embedded_file= "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/phoenix14t.pami0.train"
     teacher_target_file = "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/ensemble_de.txt"
     target_file = "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/target.txt"
+    teacher_target_file_list = [
+        "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/EnsembleT1.txt",
+        "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/EnsembleT12.txt",
+        "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/data/PHOENIX2014T/EnsembleT34.txt"
+
+    ]
+    teacher_target_file_list.append(teacher_target_file)
+
 
     raw_datas = load_dataset_file(filename=embedded_file)
-
-    teacher_target = read_all_dataset(filename=teacher_target_file)
     target = read_all_dataset(filename=target_file)
-    assert len(raw_datas) == len(teacher_target) and len(teacher_target) == len(target)
-    print(" ")
+    signs_len = len(raw_datas)
+    for index in range(len(teacher_target_file_list)):
+        teacher_target_file = teacher_target_file_list[index]
+        teacher_target = read_all_dataset(filename=teacher_target_file)
+        assert signs_len== len(teacher_target) and len(teacher_target) == len(target)
+        print(teacher_target_file)
 
-    for index in range(len(teacher_target)):
-        target_text = target[index]
-        output_text = raw_datas[index]["text"]
-        new_taget_text = teacher_target[index]
-        if output_text[0:-2] == target_text:
-            new_sample = copy.deepcopy(raw_datas[index])
-            new_sample["text"] = new_taget_text + " ."
-            new_sample["name"] = new_sample["name"] + "_teacher"
-            raw_datas.append(new_sample)
+        for index in range(len(target)):
+            target_text = target[index]
+            output_text = raw_datas[index]["text"]
+            new_taget_text = teacher_target[index]
+            if output_text[0:-2] == target_text:
+                new_sample = copy.deepcopy(raw_datas[index])
+                new_sample["text"] = new_taget_text + " ."
+                new_sample["name"] = new_sample["name"] + "_teacher_{}".format(index)
+                raw_datas.append(new_sample)
 
 
-    save_path = embedded_file + "_Teacher_DA_" + ".pickle"
+    save_path = embedded_file + "_Teachers_DA_" + ".pickle"
     with open(save_path, "wb") as list_file:
         pickle.dump(raw_datas, list_file)
 

@@ -37,6 +37,8 @@ class MultiHeadedAttention(nn.Module):
         self.output_layer = nn.Linear(size, size)
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
+        #@jinhui add val to recode the last forward attention
+        self.last_batch_attention_matrix = None
 
     def forward(self, k: Tensor, v: Tensor, q: Tensor, mask: Tensor = None):
         """
@@ -74,6 +76,7 @@ class MultiHeadedAttention(nn.Module):
 
         # apply attention dropout and compute context vectors.
         attention = self.softmax(scores)
+        self.last_batch_attention_matrix = attention
         attention = self.dropout(attention)
 
         # get context vector (select values with attention) and reshape
@@ -87,7 +90,7 @@ class MultiHeadedAttention(nn.Module):
 
         output = self.output_layer(context)
 
-        return output
+        return output #, attention_full #@jinhui 增加返回 attention的逻辑
 
 
 # pylint: disable=arguments-differ

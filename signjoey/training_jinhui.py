@@ -28,7 +28,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from signjoey.model import build_model
-from signjoey.batch import Batch
+from signjoey.batch import Batch, Batch_jinhui, Batch_jinhui_gls2text
 from signjoey.helpers import (
     log_data_info,
     load_config,
@@ -148,7 +148,7 @@ class TrainManager:
                 )
             )
 
-        # data_augmentation parameters
+        # data_augmentation parametersdel trainer
         self.frame_subsampling_ratio = config["data"].get(
             "frame_subsampling_ratio", None
         )
@@ -357,7 +357,7 @@ class TrainManager:
         if self.use_cuda:
             self.model.cuda()
 
-    def train_and_validate(self, train_data: Dataset, valid_data: Dataset) -> None:
+    def train_and_validate(self, train_data: Dataset, valid_data: Dataset, train_gloss2text_data: Dataset) -> None:
         """
         Train the model and validate it from time to time on the validation set.
 
@@ -371,6 +371,7 @@ class TrainManager:
             train=True,
             shuffle=self.shuffle,
         )
+
         epoch_no = None
         for epoch_no in range(self.epochs):
             self.logger.info("EPOCH %d", epoch_no + 1)
@@ -390,10 +391,17 @@ class TrainManager:
                 processed_txt_tokens = self.total_txt_tokens
                 epoch_translation_loss = 0
 
+            #@jinhui 在gloss2text 数据集行训练
+            if train_gloss2text_data != None and self.config["training"].get("G2T_pretraining", False):
+                #@jinhui 保持 DA 数据的 read data 的比率
+                rati = max((len(train_gloss2text_data) // len(train_data) // 4), 1)
+                if epoch_no % rati == 0:
+                    self.training_on_gls2text(model=self.model,trainset=train_gloss2text_data)
+
             for batch in iter(train_iter):
                 # reactivate training
                 # create a Batch object from torchtext batch
-                batch = Batch(
+                batch_0 = Batch_jinhui(
                     is_train=True,
                     torch_batch=batch,
                     txt_pad_index=self.txt_pad_index,
@@ -403,6 +411,7 @@ class TrainManager:
                     frame_subsampling_ratio=self.frame_subsampling_ratio,
                     random_frame_subsampling=self.random_frame_subsampling,
                     random_frame_masking_ratio=self.random_frame_masking_ratio,
+                    if_MixGen=0
                 )
 
                 # only update every batch_multiplier batches
@@ -412,8 +421,33 @@ class TrainManager:
                 update = count == 0
 
                 recognition_loss, translation_loss = self._train_batch(
-                    batch, update=update
+                    batch_0, update=update, forward_type = self.config["training"]["forward_type"]
                 )
+
+                # TODO MixGen
+                if_MixGen = self.config["data"].get("if_mixGen", False)
+
+                if if_MixGen == 1:
+                    batch_mixGen = Batch_jinhui(
+                        is_train=True,
+                        torch_batch=batch,
+                        txt_pad_index=self.txt_pad_index,
+                        gla_pad_index=self.model.gls_pad_index,
+                        sgn_dim=self.feature_size,
+                        use_cuda=self.use_cuda,
+                        frame_subsampling_ratio=self.frame_subsampling_ratio,
+                        random_frame_subsampling=self.random_frame_subsampling,
+                        random_frame_masking_ratio=self.random_frame_masking_ratio,
+                        if_MixGen=self.config["data"]["if_mixGen"]
+                    )
+
+                    recognition_loss_mixGen, translation_loss_mixGen = self._train_batch(
+                        batch_mixGen, update=update, forward_type = self.config["training"]["forward_type"]
+                    )
+
+                    recognition_loss = (recognition_loss + recognition_loss_mixGen) * 0.5
+                    translation_loss = (translation_loss + translation_loss_mixGen) * 0.5
+
 
                 if self.do_recognition:
                     self.tb_writer.add_scalar(
@@ -1029,7 +1063,7 @@ class TrainManager:
         # else:
         #     decoded_gloss_sequences = None
 
-    def _train_batch(self, batch: Batch, update: bool = True) -> (Tensor, Tensor):
+    def _train_batch(self, batch: Batch, update: bool = True, forward_type="sign") -> (Tensor, Tensor):
         """
         Train the model on one batch: Compute the loss, make a gradient step.
 
@@ -1038,7 +1072,7 @@ class TrainManager:
         :return normalized_recognition_loss: Normalized recognition loss
         :return normalized_translation_loss: Normalized translation loss
         """
-        forward_type = self.config["training"]["forward_type"]
+        # forward_type = self.config["training"]["forward_type"]
         # forward_function = self.model.get_loss_for_batch_byG
         if forward_type == "gloss" or forward_type == "sign":
             forward_function = self.model.get_loss_for_batch
@@ -1275,7 +1309,48 @@ class TrainManager:
         with open(current_valid_output_file, "w", encoding="utf-8") as opened_file:
             for seq, hyp in zip(sequence_ids, hypotheses):
                 opened_file.write("{}|{}\n".format(seq, hyp))
+    # @jinhui
+    def training_on_gls2text(self, model=None, trainset=None):
+        if trainset != None:
+            train_g2t_iter = make_data_iter(
+                trainset,
+                batch_size=self.batch_size,
+                batch_type=self.batch_type,
+                train=True,
+                shuffle=self.shuffle,
+                sort_key="gls"
+            )
 
+
+        for batch in iter(train_g2t_iter):
+            # reactivate training
+            # create a Batch object from torchtext batch
+            batch_0 = Batch_jinhui_gls2text(
+                is_train=True,
+                torch_batch=batch,
+                txt_pad_index=self.txt_pad_index,
+                gla_pad_index=self.model.gls_pad_index,
+                use_cuda=self.use_cuda,
+                frame_subsampling_ratio=self.frame_subsampling_ratio,
+                random_frame_subsampling=self.random_frame_subsampling,
+                random_frame_masking_ratio=self.random_frame_masking_ratio,
+                if_MixGen=0
+            )
+
+            update = 1
+
+            recognition_loss, translation_loss = self._train_batch(
+                batch_0, update=update, forward_type = "gloss"
+            )
+
+            # if (
+            #         self.scheduler is not None
+            #         and self.scheduler_step_at == "step"
+            #         and update
+            # ):
+            #     self.scheduler.step()
+
+        pass
 
 def train(cfg_file: str) -> None:
     """
@@ -1288,23 +1363,36 @@ def train(cfg_file: str) -> None:
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
-    train_data, dev_data, test_data, gls_vocab, txt_vocab = load_data(
+    train_data, dev_data, test_data, gls_vocab, txt_vocab, train_gloss2text_data = load_data(
         data_cfg=cfg["data"]
     )
 
     # build model and load parameters into it
     do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
     do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
-    model = build_model_mixup(
-        cfg=cfg["model"],
-        gls_vocab=gls_vocab,
-        txt_vocab=txt_vocab,
-        sgn_dim=sum(cfg["data"]["feature_size"])
-        if isinstance(cfg["data"]["feature_size"], list)
-        else cfg["data"]["feature_size"],
-        do_recognition=do_recognition,
-        do_translation=do_translation,
-    )
+    build_type = cfg["model"].get("build_type", "build_model")
+    if build_type :
+        model = build_model_mixup(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+        )
+    else:
+        model = build_model(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+        )
 
     # for training management, e.g. early stopping and model selection
     trainer = TrainManager(model=model, config=cfg)
@@ -1333,9 +1421,9 @@ def train(cfg_file: str) -> None:
     txt_vocab.to_file(txt_vocab_file)
 
     # train the model
-    trainer.train_and_validate(train_data=train_data, valid_data=dev_data)
+    trainer.train_and_validate(train_data=train_data, valid_data=dev_data, train_gloss2text_data=train_gloss2text_data)
     # Delete to speed things up as we don't need training data anymore
-    del train_data, dev_data, test_data
+    del train_data, dev_data, test_data, train_gloss2text_data
 
     # predict with the best model on validation and test
     # (if test data is available)
@@ -1344,18 +1432,18 @@ def train(cfg_file: str) -> None:
     output_path = os.path.join(trainer.model_dir, output_name)
     logger = trainer.logger
     del trainer
-    print(ckpt)
+    # print(ckpt)
     test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
-
+    # test_jinhui(cfg_file)
 
 def test_jinhui(cfg_file=None):
-    cfg = load_config(cfg_file)
+    # cfg = load_config(cfg_file)
 
     # predict with the best model on validation and test
     # (if test data is available)
-    ckpt = "/apdcephfs/share_916081/jinhuiye/Projects/slt/training_task/sign_model_seed_7/best.ckpt"
+    ckpt = "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/training_task/sign_M_MSKD_S2T_seed42_raw/best.ckpt"
     # output_name = "best.IT_{:08d}".format(1)
-    output_path = "/apdcephfs/share_916081/jinhuiye/Projects/slt/training_task/sign_model_seed_7/output"
+    output_path = "/apdcephfs/share_916081/shared_info/zhengshguo/jinhui/Projects/SLT/training_task/sign_M_MSKD_S2T_seed42_raw/txt"
     logger = make_logger(model_dir=output_path)
 
     test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
