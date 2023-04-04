@@ -336,3 +336,96 @@ def add_project_root(): #@jinhui
     from os.path import abspath, join, dirname
     sys.path.insert(0, abspath(join(abspath(dirname(__file__)), '../')))
 
+
+import torch
+import numpy as np
+
+def get_alignment(log_prob, target, input_length, target_length):
+    alignment = []
+    label_at_pos = []
+
+    for i in range(target_length):
+        start = i * (input_length // target_length)
+        end = (i + 1) * (input_length // target_length) if i < target_length - 1 else input_length
+
+        if i == target_length - 1:
+            alignment.extend([i] * (input_length - len(alignment)))
+            label_at_pos.extend([target[i].item()] * (input_length - len(label_at_pos)))
+        else:
+            next_best_idx = np.argmax(log_prob[end:, target[i + 1]].detach().cpu().numpy()) + end
+            split_point = np.argmax(log_prob[start:next_best_idx, target[i]] - log_prob[start:next_best_idx, target[i + 1]]) + start
+            alignment.extend([i] * (split_point - len(alignment) + 1))
+            label_at_pos.extend([target[i].item()] * (split_point - len(label_at_pos) + 1))
+
+    return alignment, label_at_pos
+
+
+# def ctc_alignment(log_probs, input_lengths, targets, target_lengths):
+#     batch_alignment = []
+#     batch_label_at_pos = []
+#
+#     for b in range(log_probs.size(0)):
+#         log_prob = log_probs[b, :input_lengths[b], :].cpu()
+#         target = targets[b, :target_lengths[b]]
+#
+#         alignment, label_at_pos = get_alignment(log_prob, target, input_lengths[b], target_lengths[b])
+#         batch_alignment.append(alignment)
+#         batch_label_at_pos.append(label_at_pos)
+#
+#     return batch_alignment, batch_label_at_pos
+
+def ctc_alignment(log_probs, input_lengths, targets, target_lengths):
+    batch_alignment = []
+    batch_label_at_pos = []
+    for log_prob, length, target, target_length in zip(log_probs, input_lengths, targets, target_lengths):
+        log_prob = log_prob[:length]
+        target = target[:target_length].tolist()
+
+        input_length = len(log_prob)
+        target_length = len(target)
+
+        alignment = []
+        label_at_pos = []
+        for i in range(target_length):
+            start = i * (input_length // target_length)
+            end = (i + 1) * (input_length // target_length) if i < target_length - 1 else input_length
+
+            if i == target_length - 1:
+                alignment.extend([i] * (input_length - len(alignment)))
+                label_at_pos.extend([target[i]] * (input_length - len(label_at_pos)))
+            else:
+                next_best_idx = np.argmax(log_prob[end:min(end + (input_length - end)//2, input_length), target[i + 1]].detach().cpu().numpy()) + end
+                split_point = np.argmax(
+                    log_prob[start:next_best_idx, target[i]] - log_prob[start:next_best_idx, target[i + 1]]) + start
+                alignment.extend([i] * (split_point - len(alignment) + 1))
+                label_at_pos.extend([target[i]] * (split_point - len(label_at_pos) + 1))
+
+        batch_alignment.append(alignment)
+        batch_label_at_pos.append(label_at_pos)
+    return batch_alignment, batch_label_at_pos
+
+
+
+
+if __name__ == "__main__":
+
+    pass
+    # Example usage
+    batch_size = 2
+    seq_length = 10
+    num_classes = 5
+    blank = 0
+
+    log_probs = torch.randn(batch_size, seq_length, num_classes).log_softmax(2)
+    input_lengths = torch.tensor([seq_length] * batch_size)
+    target_lengths = torch.tensor([4, 3])
+
+    targets = torch.tensor([
+        [1, 2, 3, 4],
+        [1, 3, 4, 0]
+    ])
+
+    batch_alignment, batch_label_at_pos = ctc_alignment(log_probs, input_lengths, targets, target_lengths)
+
+    print("Batch alignment info:", batch_alignment)
+    print("Batch label at position info:", batch_label_at_pos)

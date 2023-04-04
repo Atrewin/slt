@@ -18,7 +18,7 @@ from torchvision import transforms
 
 def load_dataset_file(filename):
 
-    if "pickle" not in filename[-6:]:
+    if ".pickle" not in filename:
         with gzip.open(filename, "rb") as f:
             loaded_object = pickle.load(f)
     else:
@@ -131,11 +131,11 @@ class SignVideo2TextDataset(data.Dataset):
         #@jinhui
         example = self.examples[i]
 
-        video_frame_file = os.path.join(self.video_raw_path, example.sequence)
-        #
-        imags = self.sign2tensor(video_path=video_frame_file)
-        #@jinhui waiting TODO
-        example.rawFrames = self.raw_frames_imgs[i]
+        # video_frame_file = os.path.join(self.video_raw_path, example.sequence)
+        # #
+        # imags = self.sign2tensor(video_path=video_frame_file)
+        # #@jinhui waiting TODO
+        # example.rawFrames = imags
         return example
     def sign2tensor(self, video_path):
         '''
@@ -217,9 +217,12 @@ class SignTranslationDataset(data.Dataset):
 
         samples = {}
         for annotation_file in path:
-            tmp = load_dataset_file(annotation_file)
+            tmp = load_dataset_file(annotation_file)#@jinhui wait
             for s in tmp:
-                seq_id = s["name"]
+                try:
+                    seq_id = s["name"]
+                except:
+                    continue
                 if seq_id in samples: #@jinhui 我觉得不应该合并数据 原作者探索过 multiview feature cat
                     # assert samples[seq_id]["name"] == s["name"]
                     # assert samples[seq_id]["signer"] == s["signer"]

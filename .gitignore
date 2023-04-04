@@ -12,3 +12,5 @@ experiment_results/
 training_task/
 
 base_annotations/
+
+VAC_CSLR/dataset

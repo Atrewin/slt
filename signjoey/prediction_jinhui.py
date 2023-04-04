@@ -1,4 +1,12 @@
 #!/usr/bin/env python
+def add_project_root(): #@jinhui
+    import sys
+    from os.path import abspath, join, dirname
+    sys.path.insert(0, abspath(join(abspath(dirname(__file__)), '../')))
+
+add_project_root()
+
+
 import torch
 
 torch.backends.cudnn.deterministic = True
@@ -1199,7 +1207,7 @@ def test_model_average(
     )
 
     # load the data
-    _, dev_data, test_data, gls_vocab, txt_vocab, _ = load_data(data_cfg=cfg["data"])
+    train_data, dev_data, test_data, gls_vocab, txt_vocab, train_gloss2text_data  = load_data(data_cfg=cfg["data"])
 
 
 
@@ -1228,23 +1236,18 @@ def test_model_average(
         models.append(model)
 
     # Ensemble
-    params = [p for model in models for p in model.parameters()]  # 将所有模型的参数打平成一个列表
-    avg_params = [p / len(models) for p in params]  # 计算平均值
-    # avg_params2 = [(p1 + p2 + p3) / 3 for p1, p2, p3 in zip(model1_params, model2_params, model3_params)]
+    num_models = len(models)
+    params = [list(model.parameters()) for model in models]
+    avg_params = [
+        sum(p) / len(models) for p in zip(*params)
+    ]
+    # 将平均值加载回模型中
+    # 将平均值加载回指定模型中
+    target_model_index = 0
+    for p, avg_p in zip(models[target_model_index].parameters(), avg_params):
+        p.data = avg_p
 
-    model = build_model_mixup(
-        cfg=cfg["model"],
-        gls_vocab=gls_vocab,
-        txt_vocab=txt_vocab,
-        sgn_dim=sum(cfg["data"]["feature_size"])
-        if isinstance(cfg["data"]["feature_size"], list)
-        else cfg["data"]["feature_size"],
-        do_recognition=do_recognition,
-        do_translation=do_translation,
-    )
-
-    model.load_state_dict(avg_params)
-
+    model = models[target_model_index]
 
     if use_cuda:
         model.cuda()

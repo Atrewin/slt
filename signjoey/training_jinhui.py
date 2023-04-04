@@ -6,10 +6,10 @@ def add_project_root(): #@jinhui
 
 add_project_root()
 
-import torch
+import torch, random
 
 torch.backends.cudnn.deterministic = True
-
+from signjoey import metrics
 import tensorflow as tf
 
 tf.config.set_visible_devices([], "GPU")
@@ -357,6 +357,7 @@ class TrainManager:
         if self.use_cuda:
             self.model.cuda()
 
+
     def train_and_validate(self, train_data: Dataset, valid_data: Dataset, train_gloss2text_data: Dataset) -> None:
         """
         Train the model and validate it from time to time on the validation set.
@@ -372,7 +373,21 @@ class TrainManager:
             shuffle=self.shuffle,
         )
 
+        # @jinhui 在gloss2text 数据集行训练
+        if train_gloss2text_data != None and self.config["training"].get("G2T_pretraining", False):
+            # @jinhui 保持 DA 数据的 read data 的比率
+            train_g2t_iter = make_data_iter(
+                train_gloss2text_data,
+                batch_size=self.batch_size,
+                batch_type=self.batch_type,
+                train=True,
+                shuffle=self.shuffle,
+                sort_key="gls"
+            )
+
         epoch_no = None
+
+        S2G_WER = 0
         for epoch_no in range(self.epochs):
             self.logger.info("EPOCH %d", epoch_no + 1)
 
@@ -391,16 +406,30 @@ class TrainManager:
                 processed_txt_tokens = self.total_txt_tokens
                 epoch_translation_loss = 0
 
-            #@jinhui 在gloss2text 数据集行训练
-            if train_gloss2text_data != None and self.config["training"].get("G2T_pretraining", False):
-                #@jinhui 保持 DA 数据的 read data 的比率
-                rati = max((len(train_gloss2text_data) // len(train_data) // 4), 1)
-                if epoch_no % rati == 0:
-                    self.training_on_gls2text(model=self.model,trainset=train_gloss2text_data)
-
             for batch in iter(train_iter):
                 # reactivate training
                 # create a Batch object from torchtext batch
+                # TODO update on Gloss2Text DA data
+                if train_gloss2text_data != None and self.config["training"].get("G2T_pretraining", False):
+                    batch_g2t = train_g2t_iter.next()
+                    batch_g2t = Batch_jinhui_gls2text(
+                        is_train=True,
+                        torch_batch=batch_g2t,
+                        txt_pad_index=self.txt_pad_index,
+                        gla_pad_index=self.model.gls_pad_index,
+                        use_cuda=self.use_cuda,
+                        frame_subsampling_ratio=self.frame_subsampling_ratio,
+                        random_frame_subsampling=self.random_frame_subsampling,
+                        random_frame_masking_ratio=self.random_frame_masking_ratio,
+                        if_MixGen=0
+                    )
+
+                    update = count == 0
+
+                    recognition_loss_DA, translation_loss_DA = self._train_batch(
+                        batch_g2t, update=update, forward_type="gloss"
+                    )
+                # TODO indomain update
                 batch_0 = Batch_jinhui(
                     is_train=True,
                     torch_batch=batch,
@@ -421,13 +450,13 @@ class TrainManager:
                 update = count == 0
 
                 recognition_loss, translation_loss = self._train_batch(
-                    batch_0, update=update, forward_type = self.config["training"]["forward_type"]
+                    batch_0, update=update, forward_type = self.config["training"]["forward_type"], S2G_WER=S2G_WER
                 )
 
                 # TODO MixGen
                 if_MixGen = self.config["data"].get("if_mixGen", False)
 
-                if if_MixGen == 1:
+                if if_MixGen:
                     batch_mixGen = Batch_jinhui(
                         is_train=True,
                         torch_batch=batch,
@@ -438,11 +467,11 @@ class TrainManager:
                         frame_subsampling_ratio=self.frame_subsampling_ratio,
                         random_frame_subsampling=self.random_frame_subsampling,
                         random_frame_masking_ratio=self.random_frame_masking_ratio,
-                        if_MixGen=self.config["data"]["if_mixGen"]
+                        if_MixGen=1
                     )
 
                     recognition_loss_mixGen, translation_loss_mixGen = self._train_batch(
-                        batch_mixGen, update=update, forward_type = self.config["training"]["forward_type"]
+                        batch_mixGen, update=update, forward_type = self.config["training"]["forward_type"], S2G_WER=S2G_WER
                     )
 
                     recognition_loss = (recognition_loss + recognition_loss_mixGen) * 0.5
@@ -634,12 +663,11 @@ class TrainManager:
 
                         if prev_lr != now_lr:
                             if self.last_best_lr != prev_lr:
-                                self.stop = True
+                                self.stop = False #True #@jinhui 我不想这样提前停
 
                     # append to validation report
                     self._add_report(
-                        valid_scores=val_res["valid_scores"],
-                        valid_recognition_loss=val_res["valid_recognition_loss"]
+                        val_res=val_res
                         if self.do_recognition
                         else None,
                         valid_translation_loss=val_res["valid_translation_loss"]
@@ -726,6 +754,13 @@ class TrainManager:
 
                     valid_seq = [s for s in valid_data.sequence]
                     # store validation set outputs and references
+
+                    # 这里或许可以计算 s2t_acc
+
+                    # @jinhui waiting
+                    # print("这里或许可以计算 s2t_acc")
+                    s2t_acc = metrics.bleu(val_res["gls_hyp"], val_res["gls_ref"])["bleu3"]
+                    S2G_WER = val_res["valid_scores"]["wer"]
                     if self.do_recognition:
                         self._store_outputs(
                             "dev.hyp.gls", valid_seq, val_res["gls_hyp"], "gls"
@@ -973,97 +1008,183 @@ class TrainManager:
         else:
             translation_loss_sgnBase = None
 
+        # @jinhui waiting 考虑每个 batch 中是否做mixup
+        if recognition_loss_sgnBase < 5 or random.randint(0,10) < 5:
+            # TODO find frame gloss aligner #@jinhui 没有做梯度隔离
+            aligner = "path_wise"
+            # T x B x C
+            gloss_probabilities = gloss_probabilities_sgnBase
+            # Turn it into B x T x C
+            gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
 
-        # TODO find frame gloss aligner #@jinhui 没有做梯度隔离
-        # T x N x C
-        gloss_probabilities = gloss_probabilities_sgnBase
-        # Turn it into N x T x C
-        gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
+            if aligner == "frames_wise":
+                # T x N
+                gloss_predict = torch.argmax(gloss_probabilities, dim=-1)  # 可以是可以，但是没有CTC
+            elif aligner == "path_wise":
+                alignment, gloss_predict = self.ctc_alignment(log_probs=gloss_probabilities,
+                                          input_lengths=batch.sgn_lengths.long(),
+                                          targets=batch.gls,
+                                          target_lengths=batch.gls_lengths.long())
+                pass
 
-        # T x N
-        gloss_predict = torch.argmax(gloss_probabilities, dim=-1) # 可以是可以，但是没有CTC
+            #　TODO get mixup embedding
+            glosses_embedding = self.model.gloss_embed(x=gloss_predict, mask=batch.sgn_mask)
+            sign_embedding = self.model.sgn_embed(x=batch.sgn, mask=batch.sgn_mask)
+            # @https://blog.csdn.net/weixin_44575152/article/details/123880800
+            mixup_ratio = self.config["training"]["mixup_ratio"]
+            if mixup_ratio == "auto":
+                mixup_ratio = 0
+            elif mixup_ratio == "beta ":
+                mixup_ratio = np.random.beta(0.5, 0.5)
+            else:
+                pass
+            mix_mask_sgn = gloss_predict.ge(1 - mixup_ratio) #@jinhui 比率应该是动态的， 同时不能取 到0？
+            mix_mask_gloss = ~mix_mask_sgn
+            cc = torch.stack((mix_mask_sgn, mix_mask_gloss), dim=1).permute(0, 2, 1) # N, T, 2
+            xx = torch.stack((sign_embedding, glosses_embedding), dim=2)
+            bb = xx.permute(3, 0, 1, 2)
+            shape_x = bb.shape
+            mix_sign_embedding = torch.masked_select(bb, cc).reshape(shape_x[0:-1]).permute(1, 2, 0) # 这样的 杂交其实复炸，而且不知道是否正确
 
-        #　TODO get mixup embedding
-        glosses_embedding = self.model.gloss_embed(x=gloss_predict, mask=batch.sgn_mask)
-        sign_embedding = self.model.sgn_embed(x=batch.sgn, mask=batch.sgn_mask)
-        # @https://blog.csdn.net/weixin_44575152/article/details/123880800
-        mix_mask_sgn = gloss_predict.ge(0.2)
-        mix_mask_gloss = ~mix_mask_sgn
-        cc = torch.stack((mix_mask_sgn, mix_mask_gloss), dim=1).permute(0, 2, 1) # N, T, 2
-        xx = torch.stack((sign_embedding, glosses_embedding), dim=2)
-        bb = xx.permute(3, 0, 1, 2)
-        shape_x = bb.shape
-        mix_sign_embedding = torch.masked_select(bb, cc).reshape(shape_x[0:-1]).permute(1, 2, 0) # 这样的 杂交其实复炸，而且不知道是否正确
-
-        # TODO Forward
-        encoder_output, encoder_hidden = self.model.encode(
-            sgn=mix_sign_embedding, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
-        )
-
-        if self.do_translation:
-            unroll_steps = batch.txt_input.size(1)
-            decoder_outputs_mixBase = self.model.decode(
-                encoder_output=encoder_output,
-                encoder_hidden=encoder_hidden,
-                sgn_mask=batch.sgn_mask,
-                txt_input=batch.txt_input,
-                unroll_steps=unroll_steps,
-                txt_mask=batch.txt_mask,
+            # TODO Forward
+            encoder_output, encoder_hidden = self.model.encode(
+                sgn=mix_sign_embedding, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
             )
-        else:
-            decoder_outputs_mixBase = None
 
-        if self.do_translation:
-            assert decoder_outputs_mixBase is not None
-            word_outputs_mixBase, _, _, _ = decoder_outputs_mixBase
-            # Calculate Translation Loss
-            txt_log_probs_mixBase = F.log_softmax(word_outputs_mixBase, dim=-1)
-            translation_loss_mixBase = (
-                    translation_loss_function(txt_log_probs_mixBase, batch.txt)
-                    * translation_loss_weight
-            )
+            if self.do_translation:
+                unroll_steps = batch.txt_input.size(1)
+                decoder_outputs_mixBase = self.model.decode(
+                    encoder_output=encoder_output,
+                    encoder_hidden=encoder_hidden,
+                    sgn_mask=batch.sgn_mask,
+                    txt_input=batch.txt_input,
+                    unroll_steps=unroll_steps,
+                    txt_mask=batch.txt_mask,
+                )
+            else:
+                decoder_outputs_mixBase = 0
+
+            if self.do_translation:
+                assert decoder_outputs_mixBase is not None
+                word_outputs_mixBase, _, _, _ = decoder_outputs_mixBase
+                # Calculate Translation Loss
+                txt_log_probs_mixBase = F.log_softmax(word_outputs_mixBase, dim=-1)
+                translation_loss_mixBase = (
+                        translation_loss_function(txt_log_probs_mixBase, batch.txt)
+                        * translation_loss_weight
+                )
+
+                # 计算 JS loss
+                # js_loss = torch.div(torch.add(kl_div1, kl_div2), 2) * translation_loss_weight #/ torch.sqrt(txt_log_probs_mixBase.shape())
+                txt_probs_1 = torch.exp(txt_log_probs_sgnBase)
+                txt_probs_2 = torch.exp(txt_log_probs_mixBase)
+                # 计算混合分布
+                probs_mixture = torch.div(torch.add(txt_probs_1, txt_probs_2), 2)
+                txt_log_probs_mixture = torch.log(probs_mixture + 1e-8)
+
+                # 计算 KL divergence
+                kl_div1 = torch.sum(torch.sum(txt_probs_1 * (txt_log_probs_sgnBase - txt_log_probs_mixture), dim=-1),
+                                    dim=-1)
+                kl_div2 = torch.sum(torch.sum(txt_probs_2 * (txt_log_probs_mixBase - txt_log_probs_mixture), dim=-1),
+                                    dim=-1)
+
+                # 计算 JS divergence
+                js_loss = torch.sum(torch.div(torch.add(kl_div1, kl_div2), 2), dim=-1) * translation_loss_weight * 5
+
+                translation_loss_mixBase = js_loss + translation_loss_mixBase
+
+            else:
+                translation_loss_mixBase = 0
+
         else:
-            translation_loss_mixBase = None
+            translation_loss_mixBase = 0
 
         return recognition_loss_glsbase + recognition_loss_sgnBase, translation_loss_glsbase + translation_loss_sgnBase + translation_loss_mixBase
 
-        # if self.do_recognition:
-        #     # Gloss Recognition Part
-        #     # N x T x C
-        #     gloss_scores = self.gloss_output_layer(encoder_output)
-        #     # N x T x C
-        #     gloss_probabilities = gloss_scores.log_softmax(2)
-        #     # Turn it into T x N x C
-        #     gloss_probabilities = gloss_probabilities.permute(1, 0, 2)
-        #     gloss_probabilities = gloss_probabilities.cpu().detach().numpy()
-        #     tf_gloss_probabilities = np.concatenate(
-        #         (gloss_probabilities[:, :, 1:], gloss_probabilities[:, :, 0, None]),
-        #         axis=-1,
-        #     )
-        #
-        #     assert recognition_beam_size > 0
-        #     ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
-        #         inputs=tf_gloss_probabilities,
-        #         sequence_length=x_lengths.cpu().detach().numpy(),
-        #         beam_width=recognition_beam_size,
-        #         top_paths=1,
-        #     )
-        #     ctc_decode = ctc_decode[0]
-        #     # Create a decoded gloss list for each sample
-        #     tmp_gloss_sequences = [[] for i in range(gloss_scores.shape[0])]
-        #     for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
-        #         tmp_gloss_sequences[dense_idx[0]].append(
-        #             ctc_decode.values[value_idx].numpy() + 1
-        #         )
-        #     decoded_gloss_sequences = []
-        #     for seq_idx in range(0, len(tmp_gloss_sequences)):
-        #         decoded_gloss_sequences.append(
-        #             [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
-        #         )
-        # else:
-        #     decoded_gloss_sequences = None
+    def ctc_alignment(self, log_probs, input_lengths, targets, target_lengths):
+        batch_alignment = []
+        batch_label_at_pos = []
 
-    def _train_batch(self, batch: Batch, update: bool = True, forward_type="sign") -> (Tensor, Tensor):
+        max_input_length = max(input_lengths)
+
+        # Iterate through each batch
+        for log_prob, length, target, target_length in zip(log_probs, input_lengths, targets, target_lengths):
+            log_prob = log_prob[:length].cpu()
+            gloss_padding_index = target[-1]
+            target = target[:target_length].tolist()
+
+            input_length = len(log_prob)
+            target_length = len(target)
+
+            alignment = []
+            label_at_pos = []
+
+            positions = np.linspace(0, input_length, target_length + 1).astype(int)
+
+            for i in range(target_length):
+                start = positions[i]
+                end = positions[i + 1]
+                label = target[i]
+
+                if i < target_length - 1:
+                    next_label = target[i + 1]
+
+                    if start < end:
+                        best_idx = np.argmax(log_prob[start:end, label].detach().numpy()) + start
+                    else:
+                        best_idx = start
+
+                    search_range_end = min(end + (input_length - end) // 2, input_length)
+                    if end < search_range_end:
+                        next_best_idx = np.argmax(log_prob[end:search_range_end, next_label].detach().numpy()) + end
+                    else:
+                        next_best_idx = end
+
+                    if best_idx < next_best_idx:
+                        split_point = np.argmax(
+                            log_prob[best_idx:next_best_idx, label].detach().numpy() - log_prob[best_idx:next_best_idx,
+                                                                                       next_label].detach().numpy()) + best_idx
+                    else:
+                        split_point = best_idx + 1
+                else:
+                    split_point = input_length
+
+                if split_point == start:
+                    split_point += 1
+
+                alignment.extend([i] * (split_point - len(alignment)))
+                label_at_pos.extend([label] * (split_point - len(label_at_pos)))
+
+            # Padding the alignment and label_at_pos sequences to the same length
+            alignment.extend([-1] * (max_input_length - len(alignment)))
+            label_at_pos.extend([gloss_padding_index] * (max_input_length - len(label_at_pos)))
+
+            batch_alignment.append(alignment)
+            batch_label_at_pos.append(label_at_pos)
+
+        return torch.tensor(batch_alignment).cuda(), torch.tensor(batch_label_at_pos).cuda()
+
+    def get_alignment(self, log_prob, target, input_length, target_length):
+        alignment = []
+        label_at_pos = []
+
+        for i in range(target_length):
+            start = i * (input_length // target_length)
+            end = (i + 1) * (input_length // target_length) if i < target_length - 1 else input_length
+
+            if i == target_length - 1:
+                alignment.extend([i] * (input_length - len(alignment)))
+                label_at_pos.extend([target[i].item()] * (input_length - len(label_at_pos)))
+            else:
+                next_best_idx = np.argmax(log_prob[end:, target[i + 1]].detach().cpu().numpy()) + end
+                split_point = np.argmax(
+                    log_prob[start:next_best_idx, target[i]] - log_prob[start:next_best_idx, target[i + 1]]) + start
+                alignment.extend([i] * (split_point - len(alignment) + 1))
+                label_at_pos.extend([target[i].item()] * (split_point - len(label_at_pos) + 1))
+
+        return alignment, label_at_pos
+
+    def _train_batch(self, batch: Batch, update: bool = True, forward_type="sign", S2G_WER=0) -> (Tensor, Tensor):
         """
         Train the model on one batch: Compute the loss, make a gradient step.
 
@@ -1079,8 +1200,11 @@ class TrainManager:
         elif forward_type == "modalityMuiltask":
             forward_function = self.get_loss_for_batch_modalityMultitask
         elif forward_type == "mixup":
-            forward_function = self.get_loss_for_mixup
-
+            if  S2G_WER < 40 or random.randint(0,10) < 3:
+                forward_function = self.get_loss_for_mixup
+            else:
+                # print(S2G_WER)
+                forward_function = self.get_loss_for_batch_modalityMultitask
         else:
             raise NotImplementedError("Not {} forward process".format(forward_type))
 
@@ -1150,8 +1274,7 @@ class TrainManager:
 
     def _add_report(
         self,
-        valid_scores: Dict,
-        valid_recognition_loss: float,
+        val_res: Dict,
         valid_translation_loss: float,
         valid_ppl: float,
         eval_metric: str,
@@ -1167,6 +1290,8 @@ class TrainManager:
         :param eval_metric: evaluation metric, e.g. "bleu"
         :param new_best: whether this is a new best model
         """
+        valid_scores = val_res["valid_scores"]
+        valid_recognition_loss = val_res["valid_recognition_loss"]
         current_lr = -1
         # ignores other param groups for now
         for param_group in self.optimizer.param_groups:
@@ -1177,10 +1302,11 @@ class TrainManager:
 
         if current_lr < self.learning_rate_min:
             self.stop = True
-
+        s2t_acc = metrics.bleu(val_res["gls_hyp"], val_res["gls_ref"])["bleu4"]
         with open(self.valid_report_file, "a", encoding="utf-8") as opened_file:
             opened_file.write(
                 "Steps: {}\t"
+                "Recognition BLEU-2 {:.2f}\t"
                 "Recognition Loss: {:.5f}\t"
                 "Translation Loss: {:.5f}\t"
                 "PPL: {:.5f}\t"
@@ -1191,6 +1317,7 @@ class TrainManager:
                 "ROUGE {:.2f}\t"
                 "LR: {:.8f}\t{}\n".format(
                     self.steps,
+                    s2t_acc if self.do_recognition else -1,
                     valid_recognition_loss if self.do_recognition else -1,
                     valid_translation_loss if self.do_translation else -1,
                     valid_ppl if self.do_translation else -1,

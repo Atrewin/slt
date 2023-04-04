@@ -192,7 +192,11 @@ class SpatialEmbeddings(nn.Module):
 
         self.embedding_dim = embedding_dim
         self.input_size = input_size
-        self.ln = nn.Linear(self.input_size, self.embedding_dim)
+        # self.ln = nn.Linear(self.input_size, self.embedding_dim) #@jinhui
+        self.ln = nn.Sequential(
+            nn.Linear(self.input_size, self.embedding_dim),
+            nn.ReLU(),
+            nn.Linear(self.embedding_dim, self.embedding_dim))
 
         self.norm_type = norm_type
         if self.norm_type:
