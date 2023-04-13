@@ -178,7 +178,7 @@ def build_cslt_sign_featrue(path=None,dataset_type="train"):
             'name': dataset_type + "/"+ name,
             'signer': "NONE",
             "gloss": gloss,
-            'text': word,
+            'text': char,
             'sign': torch.tensor(features)
         }
         index_id += 1
@@ -186,7 +186,7 @@ def build_cslt_sign_featrue(path=None,dataset_type="train"):
     #Save
     features_list = list(info_dict_2.values())
     save_root = "/home/yejinhui/Projects/SLT/data/CSLT/"
-    save_path = save_root + f"cslt.word.{dataset_type}" + ".pickle.word"
+    save_path = save_root + f"cslt.word.{dataset_type}" + ".pickle.char"
     with open(save_path, "wb") as list_file:
         pickle.dump(features_list[1:], list_file)
 
@@ -202,6 +202,39 @@ def char_to_word_level(input_file, output_file):
             # 将分词后的结果连接起来，用空格分隔
             word_level_line = " ".join(words)
             outfile.write(word_level_line + "\n")
+
+
+def swap_generated_gloss_data_build(path=None):
+    embedded_file= "/home/yejinhui/Projects/SLT/data/CSLT/cslt.word.test.pickle"
+    teacher_target_file = "/home/yejinhui/Projects/SLT/training_task/081_cslt_char_sign_ratio0.6_baseline_S2T_seed56_bsz64_drop15_len30_freq100_ratio_1_b4_20_5/gls/30900.dev.hyp.gls"
+    teacher_target_file_list = []
+
+    teacher_target_file_list.append(teacher_target_file)
+
+
+    raw_datas = load_dataset_file(filename=embedded_file)
+
+    signs_len = len(raw_datas)
+    for index in range(len(teacher_target_file_list)):
+        teacher_target_file = teacher_target_file_list[index]
+        teacher_target = read_all_dataset(filename=teacher_target_file)
+        # assert signs_len == len(teacher_target) and len(teacher_target) == len(target)
+        print(teacher_target_file)
+        offset = 0
+        for index in range(signs_len):
+            raw_name = raw_datas[index]["name"]
+
+            generated_name, gloss = teacher_target[index].split("|")
+
+            if raw_name != generated_name:
+                print(generated_name)
+
+            raw_datas[index]["gloss"] = gloss
+
+    save_path = embedded_file + ".generatedGloss"
+    with open(save_path, "wb") as list_file:
+        pickle.dump(raw_datas, list_file)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Joey-NMT")
@@ -224,7 +257,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     #
     # main(data_path=args.data_root_path, tip_str="train", output_path=args.output_path)
-
+    swap_generated_gloss_data_build()
     # get_new_sign_featrue()
     # teacher_model_data_build()
     # build_cslt_sign_featrue(dataset_type="test")
@@ -233,9 +266,9 @@ if __name__ == '__main__':
     #
     # build_cslt_sign_featrue(dataset_type="dev")
 
-    input_file = "/home/yejinhui/Projects/SLT/data/CSLT/PGen/Temp/temp.220812.zh.unique"
-    output_file = "/home/yejinhui/Projects/SLT/data/CSLT/PGen/Temp/temp.220812.zh.unique.word"
-    char_to_word_level(input_file, output_file)
+    # input_file = "/home/yejinhui/Projects/SLT/data/CSLT/PGen/Temp/temp.220812.zh.unique"
+    # output_file = "/home/yejinhui/Projects/SLT/data/CSLT/PGen/Temp/temp.220812.zh.unique.word"
+    # char_to_word_level(input_file, output_file)
 
 
 

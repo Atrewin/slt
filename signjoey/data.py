@@ -64,10 +64,10 @@ def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabul
         pad_feature_size = data_cfg["feature_size"]
 
     level = data_cfg["level"]
-    txt_lowercase = data_cfg["txt_lowercase"]
+    txt_lowercase = data_cfg["txt_lowercase"] # @jinhui
     max_sent_length = data_cfg["max_sent_length"]
 
-    def tokenize_text(text):
+    def tokenize_text(text): #@jinhui 这里只按照空格来分割
         if level == "char":
             return list(text)
         else:
