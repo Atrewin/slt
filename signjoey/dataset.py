@@ -18,7 +18,7 @@ from torchvision import transforms
 
 def load_dataset_file(filename):
 
-    if ".pickle" not in filename:
+    if "pickle" not in filename:
         with gzip.open(filename, "rb") as f:
             loaded_object = pickle.load(f)
     else:
@@ -217,12 +217,9 @@ class SignTranslationDataset(data.Dataset):
 
         samples = {}
         for annotation_file in path:
-            tmp = load_dataset_file(annotation_file)#@jinhui wait
+            tmp = load_dataset_file(annotation_file)
             for s in tmp:
-                try:
-                    seq_id = s["name"]
-                except:
-                    continue
+                seq_id = s["name"]
                 if seq_id in samples: #@jinhui 我觉得不应该合并数据 原作者探索过 multiview feature cat
                     # assert samples[seq_id]["name"] == s["name"]
                     # assert samples[seq_id]["signer"] == s["signer"]
@@ -269,12 +266,16 @@ class SignTranslationDataset(data.Dataset):
 
     # @overwrite
     def __getitem__(self, i):
-
+        #@jinhui 0425 我想要扩展 gloss
+        # example = copy.deepcopy(self.examples[i])
+        # ratio = max(len(example.sgn) // len(example.gls), 1)
+        # example.gls = [elem for elem in example.gls for i in range(ratio)]
+        # return example
         return self.examples[i]
 
 #@jinhui
 from signjoey.helpers import read_all_dataset
-
+import copy
 class Gloss2TextDataset(data.Dataset):
     """Defines a dataset for machine translation."""
 
@@ -314,9 +315,9 @@ class Gloss2TextDataset(data.Dataset):
             tmp_tgt = read_all_dataset(train_g2t_path_list[1])
             for index, s in enumerate(tmp_src):
                 seq_id = train_g2t_path_list[0] + "-" + str(index)
-                #@jinhui 数据对齐
-                if tmp_tgt[index][-1] != ".":
-                    tmp_tgt[index] = tmp_tgt[index][-1] + " ."
+                # #@jinhui 数据对齐
+                # if tmp_tgt[index][-1] != ".":
+                #     tmp_tgt[index] = tmp_tgt[index][:-1] + " ."
 
                 samples[seq_id] = {
                     "gloss": s,
@@ -339,7 +340,16 @@ class Gloss2TextDataset(data.Dataset):
 
     # @overwrite
     def __getitem__(self, i):
+        #@jinhui 0425 我想要扩展 gloss
 
+        # example = copy.deepcopy(self.examples[i])
+        #
+        # # ratio = max(len(example.sgn) // len(example.gls), 1)
+        # if len(example.gls) < 20:
+        #     example.gls = [elem for elem in example.gls for i in range(6)]
+        #
+        # else:
+        #     example = self.__getitem__((i+17) % len(self.examples))
         return self.examples[i]
 
 if __name__ == "__main__":

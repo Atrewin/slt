@@ -384,6 +384,7 @@ class TrainManager:
                 shuffle=self.shuffle,
                 sort_key="gls"
             )
+            train_g2t_iter = iter(train_g2t_iter)
 
         epoch_no = None
 
@@ -411,7 +412,7 @@ class TrainManager:
                 # create a Batch object from torchtext batch
                 # TODO update on Gloss2Text DA data
                 if train_gloss2text_data != None and self.config["training"].get("G2T_pretraining", False):
-                    batch_g2t = train_g2t_iter.next()
+                    batch_g2t = next(train_g2t_iter)
                     batch_g2t = Batch_jinhui_gls2text(
                         is_train=True,
                         torch_batch=batch_g2t,
@@ -840,8 +841,8 @@ class TrainManager:
         # TODO get gloss forward
         decoder_outputs_glsbase, gloss_probabilities_glsbase = self.model.forward(
             sgn=batch.gls_input,
-            sgn_mask=batch.gls_mask,
-            sgn_lengths=batch.gls_lengths,
+            sgn_mask=batch.gls_input_mask,
+            sgn_lengths=batch.gls_input_lengths,
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
             forword_type = "gloss"
@@ -854,7 +855,7 @@ class TrainManager:
                 recognition_loss_function(
                     gloss_probabilities_glsbase,
                     batch.gls,
-                    batch.gls_lengths.long(),
+                    batch.gls_input_lengths.long(),
                     batch.gls_lengths.long(),
                 )
                 * recognition_loss_weight
@@ -938,8 +939,8 @@ class TrainManager:
         # TODO get gloss forward
         decoder_outputs_glsbase, gloss_probabilities_glsbase = self.model.forward(
             sgn=batch.gls_input,
-            sgn_mask=batch.gls_mask,
-            sgn_lengths=batch.gls_lengths,
+            sgn_mask=batch.gls_input_mask,
+            sgn_lengths=batch.gls_input_lengths,
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
             forword_type = "gloss"
@@ -952,7 +953,7 @@ class TrainManager:
                 recognition_loss_function(
                     gloss_probabilities_glsbase,
                     batch.gls,
-                    batch.gls_lengths.long(),
+                    batch.gls_input_lengths.long(),
                     batch.gls_lengths.long(),
                 )
                 * recognition_loss_weight

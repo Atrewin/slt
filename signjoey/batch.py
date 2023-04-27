@@ -230,7 +230,7 @@ class Batch_jinhui:
                     init_frame = math.floor((frame_subsampling_ratio - 1) / 2)
 
                 tmp_data = features[: length.long(), :]
-                tmp_data = tmp_data[init_frame::frame_subsampling_ratio]
+                tmp_data = tmp_data[init_frame:frame_subsampling_ratio]
                 tmp_sgn[idx, 0: tmp_data.shape[0]] = tmp_data
                 tmp_sgn_lengths[idx] = tmp_data.shape[0]
 
@@ -288,14 +288,22 @@ class Batch_jinhui:
             gls, gls_lengths = torch_batch.gls
             # self.num_gls_tokens = gls_lengths.sum().detach().clone().numpy()
             # @jinhui
+            ratio = int(max(torch.sum(self.sgn_lengths)// torch.sum(gls_lengths), 1))
+            self.gls_input = gls.repeat_interleave(ratio, dim=1)
+            self.gls_input_lengths = gls_lengths * ratio
+            self.gls_input_mask = (self.gls_input != gla_pad_index).unsqueeze(1)
 
-            self.gls_input = gls
-            self.gls_lengths = gls_lengths
-
+            # self.gls_input = gls
+            #
+            # self.gls_input_mask = (self.gls_input != gla_pad_index).unsqueeze(1)
+            # self.gls_input_lengths = gls_lengths
+            #
             self.gls = gls
+            self.gls_lengths = gls_lengths
             # we exclude the padded areas from the loss computation
-            self.gls_mask = (self.gls_input != gla_pad_index).unsqueeze(1)
+            self.gls_mask = (self.gls != gla_pad_index).unsqueeze(1)
             self.num_gls_tokens = (self.gls != gla_pad_index).data.sum().item()
+
 
         # TODO concat samples
         if if_MixGen == 1:
@@ -314,18 +322,19 @@ class Batch_jinhui:
             for index in range(0,torch_batch.batch_size):
                 _signer_a = self.signer[random_indexs_1[index]]
                 _signer_b = self.signer[random_indexs_2[index]]
-                self.signer.append(_signer_a + "$$" + _signer_b)
+                self.signer.append(_signer_a + f"${index}$" + _signer_b)
 
                 _sequence_a = self.sequence[random_indexs_1[index]]
                 _sequence_b = self.sequence[random_indexs_2[index]]
-                self.sequence.append(_sequence_a + "$$" + _sequence_b)
+                self.sequence.append(_sequence_a + f"${index}$" + _sequence_b)
 
             if self.gls is not None:
                 self.gls = self.cat_sequence(input=self.gls, index_1=random_indexs_1,index_2=random_indexs_2)
                 self.gls_lengths = self.cat_lengths(input=self.gls_lengths, index_1=random_indexs_1,index_2=random_indexs_2)
 
-                self.gls_mask = self.cat_sequence(input=self.gls_mask, dim=2, index_1=random_indexs_1,index_2=random_indexs_2)
+                self.gls_input_mask = self.cat_sequence(input=self.gls_input_mask, dim=2, index_1=random_indexs_1,index_2=random_indexs_2)
                 self.gls_input = self.cat_sequence(input=self.gls_input, index_1=random_indexs_1,index_2=random_indexs_2)
+                self.gls_input_lengths = self.cat_lengths(input=self.gls_input_lengths, index_1=random_indexs_1,index_2=random_indexs_2)
 
             if self.txt is not None:
                 self.txt =  self.cat_sequence(input=self.txt, index_1=random_indexs_1,index_2=random_indexs_2)
@@ -370,6 +379,7 @@ class Batch_jinhui:
             self.gls = self.gls.cuda()
             self.gls_mask = self.gls_mask.cuda()
             self.gls_input = self.gls_input.cuda()
+            self.gls_input_mask = self.gls_input_mask.cuda()
 
     def sort_by_sgn_lengths(self):
         """
@@ -386,15 +396,17 @@ class Batch_jinhui:
         self.sgn_mask = self.sgn_mask[perm_index]
         self.sgn_lengths = self.sgn_lengths[perm_index]
 
-        self.signer = [self.signer[pi] for pi in perm_index]
+        # self.signer = [self.signer[pi] for pi in perm_index] # not important
         self.sequence = [self.sequence[pi] for pi in perm_index]
 
         if self.gls is not None:
             self.gls = self.gls[perm_index]
             self.gls_lengths = self.gls_lengths[perm_index]
-
             self.gls_mask = self.gls_mask[perm_index]
+
+            self.gls_input_mask = self.gls_input_mask[perm_index]
             self.gls_input = self.gls_input[perm_index]
+            self.gls_input_lengths = self.gls_input_lengths[perm_index]
 
         if self.txt is not None:
             self.txt = self.txt[perm_index]
@@ -402,11 +414,7 @@ class Batch_jinhui:
             self.txt_input = self.txt_input[perm_index]
             self.txt_lengths = self.txt_lengths[perm_index]
 
-        if self.use_cuda:
-            self._make_cuda()
-
         return rev_index
-
 
 class Batch_jinhui_gls2text:
     """Object for holding a batch of data with mask during training.
@@ -469,20 +477,54 @@ class Batch_jinhui_gls2text:
             self.txt_mask = (self.txt_input != txt_pad_index).unsqueeze(1)
             self.num_txt_tokens = (self.txt != txt_pad_index).data.sum().item()
 
+        # if hasattr(torch_batch, "gls"):
+        #     gls, gls_lengths = torch_batch.gls
+        #     # self.num_gls_tokens = gls_lengths.sum().detach().clone().numpy()
+        #     # @jinhui
+        #
+        #     self.gls_input = gls
+        #     self.gls_lengths = gls_lengths
+        #
+        #     self.gls = gls
+        #     # we exclude the padded areas from the loss computation
+        #     self.gls_mask = (self.gls_input != gla_pad_index).unsqueeze(1)
+        #     self.num_gls_tokens = (self.gls != gla_pad_index).data.sum().item()
+        #
+        # self.num_seqs = self.gls.size(0)
+        # TODO @jinhui 使用——
         if hasattr(torch_batch, "gls"):
             gls, gls_lengths = torch_batch.gls
             # self.num_gls_tokens = gls_lengths.sum().detach().clone().numpy()
             # @jinhui
-
-            self.gls_input = gls
-            self.gls_lengths = gls_lengths
+            ratio = random.randint(4,8)
+            self.gls_input = gls.repeat_interleave(ratio, dim=1)
+            self.gls_input_lengths = gls_lengths * ratio
+            self.gls_input_mask = (self.gls_input != gla_pad_index).unsqueeze(1)
 
             self.gls = gls
             # we exclude the padded areas from the loss computation
-            self.gls_mask = (self.gls_input != gla_pad_index).unsqueeze(1)
+            self.gls_mask = (self.gls != gla_pad_index).unsqueeze(1)
             self.num_gls_tokens = (self.gls != gla_pad_index).data.sum().item()
-
+            self.gls_lengths = gls_lengths
         self.num_seqs = self.gls.size(0)
+        # #TODO extend gloss to sign
+        # import torch
+        #
+        # gls, gls_lengths = torch_batch.gls
+        #
+        # # 用 repeat_interleave 实现在序列长度维度上重复6次
+        # self.gls_input_extend = gls.repeat_interleave(6, dim=1)
+        #
+        # # 更新 gls_lengths_extend 以适应复制后的 gls_input_extend
+        # self.gls_lengths_extend = gls_lengths * 6
+        #
+        # self.gls_extend = self.gls_input_extend
+        #
+        # # 更新 gls_mask_extend 的计算以适应复制后的 gls_input_extend
+        # self.gls_mask_extend = (self.gls_input_extend != gla_pad_index).unsqueeze(1)
+        #
+        # # 使用复制后的 gls_extend 计算 num_gls_tokens_extend
+        # self.num_gls_tokens_extend = (self.gls_extend != gla_pad_index).data.sum().item()
 
         # TODO concat samples
         if if_MixGen == 1:
@@ -541,6 +583,7 @@ class Batch_jinhui_gls2text:
             self.gls = self.gls.cuda()
             self.gls_mask = self.gls_mask.cuda()
             self.gls_input = self.gls_input.cuda()
+            self.gls_input_mask = self.gls_input_mask.cuda()
 
     def sort_by_sgn_lengths(self):
         """
@@ -563,9 +606,11 @@ class Batch_jinhui_gls2text:
         if self.gls is not None:
             self.gls = self.gls[perm_index]
             self.gls_lengths = self.gls_lengths[perm_index]
-
             self.gls_mask = self.gls_mask[perm_index]
+
+            self.gls_input_mask = self.gls_input_mask[perm_index]
             self.gls_input = self.gls_input[perm_index]
+            self.gls_input_lengths = self.gls_input_lengths[perm_index]
 
         if self.txt is not None:
             self.txt = self.txt[perm_index]

@@ -655,7 +655,7 @@ class SignMixupModel(nn.Module):
         # Do a forward pass @jinhui 这里需不需要解构责任  12.03 => 控制变量和方法只是实现方式，分支来源才是责任人
         # @jinhui 这里不知道为什么要单独写如x
         if forward_type == "gloss":
-            x, x_mask, x_lengths = batch.gls_input, batch.gls_mask, batch.gls_lengths
+            x, x_mask, x_lengths = batch.gls_input, batch.gls_input_mask, batch.gls_input_lengths
         elif forward_type == "sign":
             x, x_mask, x_lengths = batch.sgn, batch.sgn_mask, batch.sgn_lengths
         else:
