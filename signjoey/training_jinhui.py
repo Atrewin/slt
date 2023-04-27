@@ -1089,10 +1089,31 @@ class TrainManager:
                                     dim=-1)
 
                 # 计算 JS divergence
-                js_loss = torch.sum(torch.div(torch.add(kl_div1, kl_div2), 2), dim=-1) * translation_loss_weight * 5
+                js_loss = torch.sum(torch.div(torch.add(kl_div1, kl_div2), 2), dim=-1) * translation_loss_weight * 15
 
                 translation_loss_mixBase = js_loss + translation_loss_mixBase
 
+
+                # 直接约束 embedding相似度
+
+                # 计算 JS loss
+                # js_loss = torch.div(torch.add(kl_div1, kl_div2), 2) * translation_loss_weight #/ torch.sqrt(txt_log_probs_mixBase.shape())
+                gloss_emb_probs_1 = torch.exp(mix_sign_embedding)
+                sign_emb_probs_2 = torch.exp(sign_embedding)
+                # 计算混合分布
+                emb_mixture = torch.div(torch.add(gloss_emb_probs_1, sign_emb_probs_2), 2)
+                emb_log_probs_mixture = torch.log(emb_mixture + 1e-8)
+
+                # 计算 KL divergence
+                emb_kl_div1 = torch.sum(torch.sum(gloss_emb_probs_1 * (mix_sign_embedding - emb_log_probs_mixture), dim=-1),
+                                    dim=-1)
+                emb_kl_div2 = torch.sum(torch.sum(sign_emb_probs_2 * (sign_embedding - emb_log_probs_mixture), dim=-1),
+                                    dim=-1)
+
+                # 计算 JS divergence
+                emb_js_loss = torch.sum(torch.div(torch.add(emb_kl_div1, emb_kl_div2), 2), dim=-1) * translation_loss_weight * 15
+
+                translation_loss_mixBase = translation_loss_mixBase + emb_js_loss
             else:
                 translation_loss_mixBase = 0
 
