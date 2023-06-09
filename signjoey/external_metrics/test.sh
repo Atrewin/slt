@@ -1,8 +1,9 @@
 cd /home/yejinhui/Projects/SLT/signjoey/external_metrics
 
 
-hyp=/home/yejinhui/Projects/SLT/training_task/Reading/00_SMKD_sign_mixup_MKD_S2T_seed32_bsz128_drop15_len30_freq50/best.IT_00009850.BW_010.dev.txt
-ref=/home/yejinhui/Projects/SLT/training_task/Reading/00_SMKD_sign_mixup_MKD_S2T_seed32_bsz128_drop15_len30_freq50/references.dev.gls
+hyp=/home/yejinhui/Projects/SLT/training_task/0408_cslt_signKDs_Mixup_ratio0.6_baseline_S2T_seed56_bsz64_drop15_len30_freq100_ratio_1_b4_20_5/best.IT_00017000.BW_03.A_1.dev.txt
+
+ref=/home/yejinhui/Projects/SLT/training_task/0408_cslt_signKDs_Mixup_ratio0.6_baseline_S2T_seed56_bsz64_drop15_len30_freq100_ratio_1_b4_20_5/references.dev.txt
 
 python bleu.py 1 $hyp $ref
 python bleu.py 2 $hyp $ref

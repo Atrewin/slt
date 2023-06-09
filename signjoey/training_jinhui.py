@@ -412,7 +412,21 @@ class TrainManager:
                 # create a Batch object from torchtext batch
                 # TODO update on Gloss2Text DA data
                 if train_gloss2text_data != None and self.config["training"].get("G2T_pretraining", False):
-                    batch_g2t = next(train_g2t_iter)
+                    try:
+                        batch_g2t = next(train_g2t_iter)
+                    except StopIteration:
+                        # handle the situation, e.g., reset the iterator or break the loop
+                        train_g2t_iter = make_data_iter(
+                            train_gloss2text_data,
+                            batch_size=self.batch_size,
+                            batch_type=self.batch_type,
+                            train=True,
+                            shuffle=self.shuffle,
+                            sort_key="gls"
+                        )
+                        train_g2t_iter = iter(train_g2t_iter)
+                        batch_g2t = next(train_g2t_iter)
+
                     batch_g2t = Batch_jinhui_gls2text(
                         is_train=True,
                         torch_batch=batch_g2t,

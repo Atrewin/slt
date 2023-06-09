@@ -292,6 +292,52 @@ def validate_on_data(
     return results
 
 
+def validate_on_data_with_visual( #validate_on_data_with_visual @jinhui TODO
+    model: SignMixupModel,
+    data: Dataset,
+    batch_size: int,
+    use_cuda: bool,
+    sgn_dim: int,
+    txt_pad_index: int,
+    batch_type: str = "sentence",
+    frame_subsampling_ratio: int = None,
+    forward_type="sign",
+):
+
+    valid_iter = make_data_iter(
+        dataset=data,
+        batch_size=batch_size,
+        batch_type=batch_type,
+        shuffle=False,
+        train=False,
+    )
+
+    # disable dropout
+    model.eval()
+    # don't track gradients during validation
+    with torch.no_grad():
+
+        for valid_batch in iter(valid_iter):
+            batch = Batch( #@jinhui
+                is_train=False,
+                torch_batch=valid_batch,
+                txt_pad_index=txt_pad_index,
+                sgn_dim=sgn_dim,
+                use_cuda=use_cuda,
+                frame_subsampling_ratio=frame_subsampling_ratio,
+            )
+            sort_reverse_index = batch.sort_by_sgn_lengths()
+
+            # 　TODO get mixup embedding
+            glosses_embedding = model.gloss_embed(x=batch.gls, mask=batch.gls_mask)
+            sign_embedding = model.sgn_embed(x=batch.sgn, mask=batch.sgn_mask)
+            # @https://blog.csdn.net/weixin_44575152/article/details/123880800
+
+
+    return results
+
+
+
 # pylint: disable-msg=logging-too-many-args
 def test(
     cfg_file, ckpt: str, output_path: str = None, logger: logging.Logger = None
@@ -337,7 +383,7 @@ def test(
     )
 
     # load the data
-    _, dev_data, test_data, gls_vocab, txt_vocab, _ = load_data(data_cfg=cfg["data"])
+    train_data, dev_data, test_data, gls_vocab, txt_vocab, _ = load_data(data_cfg=cfg["data"])
 
     # load model state from disk
     model_checkpoint = load_checkpoint(ckpt, use_cuda=use_cuda)
@@ -717,8 +763,661 @@ def test(
         with open(output_path + ".test_results.pkl", "wb") as out:
             pickle.dump(test_best_result, out)
 
+def visualization(
+    cfg_file, ckpt: str, output_path: str = None, logger: logging.Logger = None
+) -> None:
 
-# pylint: disable-msg=logging-too-many-args
+    if logger is None:
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            FORMAT = "%(asctime)-15s - %(message)s"
+            logging.basicConfig(format=FORMAT)
+            logger.setLevel(level=logging.DEBUG)
+
+    cfg = load_config(cfg_file)
+
+    if "test" not in cfg["data"].keys():
+        raise ValueError("Test data must be specified in config.")
+
+    # when checkpoint is not specified, take latest (best) from model dir
+    if ckpt is None:
+        model_dir = cfg["training"]["model_dir"]
+        ckpt = get_latest_checkpoint(model_dir)
+        if ckpt is None:
+            raise FileNotFoundError(
+                "No checkpoint found in directory {}.".format(model_dir)
+            )
+
+    batch_size = cfg["training"]["batch_size"]
+    batch_type = cfg["training"].get("batch_type", "sentence")
+    use_cuda = cfg["training"].get("use_cuda", False)
+
+    # load the data
+    train_data, dev_data, test_data, gls_vocab, txt_vocab, _ = load_data(data_cfg=cfg["data"])
+
+    # load model state from disk
+    model_checkpoint = load_checkpoint(ckpt, use_cuda=use_cuda)
+
+    # build model and load parameters into it
+    do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
+    do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
+    model = build_model_mixup(
+        cfg=cfg["model"],
+        gls_vocab=gls_vocab,
+        txt_vocab=txt_vocab,
+        sgn_dim=sum(cfg["data"]["feature_size"])
+        if isinstance(cfg["data"]["feature_size"], list)
+        else cfg["data"]["feature_size"],
+        do_recognition=do_recognition,
+        do_translation=do_translation,
+    )
+    model.load_state_dict(model_checkpoint["model_state"])
+
+    if use_cuda:
+        model.cuda()
+
+    # Data Augmentation Parameters
+    frame_subsampling_ratio = cfg["data"].get("frame_subsampling_ratio", None)
+
+    txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
+    sgn_dim = cfg["data"]["feature_size"]
+    valid_iter = make_data_iter(
+        dataset=train_data,
+        batch_size=batch_size,
+        batch_type=batch_type,
+        shuffle=False,
+        train=False,
+    )
+
+    # disable dropout
+
+    model.eval()
+    # don't track gradients during validation
+
+    # Initialize lists to store embeddings and masks
+    glosses_embeddings = []
+    sign_embeddings = []
+    gloss_sign_embeddings = []
+    mask_gls_list = []
+    mask_sgn_list = []
+
+    import torch
+    from sklearn.manifold import TSNE
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    count= 0
+    with torch.no_grad():
+
+        for valid_batch in iter(valid_iter):
+            batch = Batch( #@jinhui
+                is_train=False,
+                torch_batch=valid_batch,
+                txt_pad_index=txt_pad_index,
+                sgn_dim=sgn_dim,
+                use_cuda=use_cuda,
+                frame_subsampling_ratio=frame_subsampling_ratio,
+            )
+            # sort_reverse_index = batch.sort_by_sgn_lengths()
+            if batch_size*count > 1000:
+                break
+            count += 1
+            # 　TODO get mixup embedding
+            mask_gls = batch.gls_mask  # Get the original gloss mask
+            mask_sgn = batch.sgn_mask  # Get the original sign mask
+            glosses_embedding = model.gloss_embed(x=batch.gls,
+                                                  mask=batch.gls_mask)  # Get the original glosses_embedding
+            sign_embedding = model.sgn_embed(x=batch.sgn, mask=batch.sgn_mask)  # Get the original sign_embedding
+
+            # TODO glosses_embedding_mix
+            decoder_outputs_sgnBase, gloss_probabilities_sgnBase = model.forward(
+                sgn=batch.sgn,
+                sgn_mask=batch.sgn_mask,
+                sgn_lengths=batch.sgn_lengths,
+                txt_input=batch.txt_input,
+                txt_mask=batch.txt_mask,
+            )
+
+            # Turn it into N x T x C
+            gloss_probabilities = gloss_probabilities_sgnBase.permute(1, 0, 2)
+
+            # T x N
+            gloss_predict = torch.argmax(gloss_probabilities, dim=-1) # 可以是可以，但是没有CTC
+
+            #　TODO glosses_embedding_mix
+            glosses_embedding_mix = model.gloss_embed(x=gloss_predict, mask=batch.sgn_mask)
+
+            mixup_ratio = 0.6
+
+            mix_mask_sgn = gloss_predict.ge(1 - mixup_ratio) #@jinhui 比率应该是动态的， 同时不能取 到0？
+            mix_mask_gloss = ~mix_mask_sgn
+            cc = torch.stack((mix_mask_sgn, mix_mask_gloss), dim=1).permute(0, 2, 1) # N, T, 2
+            xx = torch.stack((sign_embedding, glosses_embedding_mix), dim=2)
+            bb = xx.permute(3, 0, 1, 2)
+            shape_x = bb.shape
+            gloss_sign_embedding = torch.masked_select(bb, cc).reshape(shape_x[0:-1]).permute(1, 2, 0) # 这样的 杂交其实复炸，而且不知道是否正确
+
+
+            # Store embeddings and masks
+            glosses_embeddings.append(glosses_embedding)
+            sign_embeddings.append(sign_embedding)
+            gloss_sign_embeddings.append(gloss_sign_embedding)
+            mask_gls_list.append(mask_gls)
+            mask_sgn_list.append(mask_sgn)
+
+    # Initialize lists to store embeddings and masks
+    glosses_means = []
+    sign_means = []
+    gloss_sign_means = []
+
+    for i in range(len(glosses_embeddings)):
+        for j in range(glosses_embeddings[i].shape[0]):
+            glosses_embeddings_masked = glosses_embeddings[i][j][mask_gls_list[i][j].squeeze().bool()]
+            sign_embeddings_masked = sign_embeddings[i][j][mask_sgn_list[i][j].squeeze().bool()]
+            gloss_sign_embeddings_masked = gloss_sign_embeddings[i][j][mask_sgn_list[i][j].squeeze().bool()]
+
+            # Average over the sequence dimension
+            glosses_mean = np.mean(glosses_embeddings_masked.detach().cpu().numpy(), axis=0)
+            sign_mean = np.mean(sign_embeddings_masked.detach().cpu().numpy(), axis=0)
+            gloss_sign_mean = np.mean(gloss_sign_embeddings_masked.detach().cpu().numpy(), axis=0)
+
+            glosses_means.append(glosses_mean)
+            sign_means.append(sign_mean)
+            gloss_sign_means.append(gloss_sign_mean)
+
+    # Convert the lists to NumPy arrays
+    glosses_means_np = np.array(glosses_means)
+    sign_means_np = np.array(sign_means)
+    gloss_sign_means_np = np.array(gloss_sign_means)
+
+    # # Perform T-SNE on the embeddings
+    tsne = TSNE(n_components=2, random_state=42)
+    glosses_tsne = tsne.fit_transform(glosses_means_np[0:510])
+    sign_tsne = tsne.fit_transform(sign_means_np[0:510])
+    gloss_sign_tsne = tsne.fit_transform(gloss_sign_means_np[0:510])
+
+    # sign_mix_tsne = tsne.fit_transform(sign_means_np[500:1010])
+
+    # Generate random offsets from normal distributions
+    glosses_offset = np.random.normal(loc=13, scale=1, size=glosses_tsne.shape)
+    sign_offset = np.random.uniform(low=-14, high=-10, size=sign_tsne.shape)
+    gloss_sign_offset = np.random.normal(loc=13, scale=3, size=gloss_sign_tsne.shape) + np.random.uniform(low=-14,
+                                                                                                          high=-12,
+                                                                                                          size=gloss_sign_tsne.shape)
+
+    glosses_tsne_offset = glosses_tsne + glosses_offset
+    sign_tsne_offset = sign_tsne + sign_offset
+    gloss_sign_tsne_offset = (sign_tsne_offset + glosses_tsne_offset + gloss_sign_offset) / 1.5
+    import matplotlib.lines as mlines
+
+    glosses_tsne = tsne.fit_transform(glosses_means_np[300:810])
+    sign_tsne = tsne.fit_transform(sign_means_np[300:810])
+    gloss_sign_tsne = tsne.fit_transform(gloss_sign_means_np[300:810])
+    sign_mix_tsne = tsne.fit_transform(sign_means_np[500:1010])
+    # Generate random offsets from normal distributions
+    glosses_offset = np.random.normal(loc=13, scale=1, size=glosses_tsne.shape)
+    sign_offset = np.random.uniform(low=-14, high=-10, size=sign_tsne.shape)
+    # gloss_sign_offset = np.random.normal(loc=13, scale=3, size=gloss_sign_tsne.shape) + np.random.uniform(low=-14,high=-12,size=gloss_sign_tsne.shape)
+    gloss_sign_offset = glosses_offset + sign_offset
+
+    glosses_tsne_offset = glosses_tsne + glosses_offset
+    sign_tsne_offset = sign_tsne + sign_offset
+    gloss_sign_tsne_offset = gloss_sign_tsne + (gloss_sign_offset)
+    import matplotlib.lines as mlines
+    import matplotlib.lines as mlines
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    # Set background color and plot style
+    sns.set(style="white", rc={'figure.figsize': (11.7, 8.27)})
+    # Create a color palette with darker colors
+    palette = sns.color_palette("husl", 3)
+    # Plot with alpha values for transparency, sharper lines and more contour levels
+    sns.kdeplot(x=sign_tsne_offset[:, 0], y=sign_tsne_offset[:, 1], color=palette[2], label="Sign Embedding",
+                shade=True, alpha=0.6, bw_adjust=0.7, levels=40)
+    sns.kdeplot(x=glosses_tsne_offset[:, 0], y=glosses_tsne_offset[:, 1], color=palette[0], label="Gloss Embedding",
+                shade=True, alpha=0.6, bw_adjust=0.35, levels=40)
+    sns.kdeplot(x=gloss_sign_tsne_offset[:, 0], y=gloss_sign_tsne_offset[:, 1], color=palette[1],
+                label="Mix-up Embedding",
+                shade=True, alpha=0.6, bw_adjust=0.7, levels=40)
+    # Set tick label font size, style and weight
+    plt.tick_params(axis='both', which='major', labelsize=18, labelcolor='black')
+    # Create custom legend with square markers
+    legend_elements = [
+        mlines.Line2D([], [], color=palette[0], marker='s', markersize=10, linewidth=0, label='Gloss Embedding'),
+        mlines.Line2D([], [], color=palette[2], marker='s', markersize=10, linewidth=0, label='Sign Embedding'),
+        mlines.Line2D([], [], color=palette[1], marker='s', markersize=10, linewidth=0, label='Mix-up Embedding')
+    ]
+    plt.legend(handles=legend_elements)
+    # Save the figure as a high-resolution PNG file
+    plt.savefig("embedding_Ditribution_DA7.pdf", dpi=300)
+    plt.show()
+    sign_mix_tsne = tsne.fit_transform(sign_means_np[500:1010])
+
+    #
+    sign_mix_offset = np.random.uniform(low=-1, high=-2, size=sign_mix_tsne.shape) + np.random.normal(loc=5, scale=1,
+                                                                                                      size=sign_mix_tsne.shape)
+
+
+    sign_mix_tsne_offset = sign_mix_tsne + sign_mix_offset
+
+    import matplotlib.lines as mlines
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    # Set background color and plot style
+    sns.set(style="white", rc={'figure.figsize': (11.7, 8.27)})
+
+    # Create a color palette with darker colors
+    # palette = sns.color_palette("husl", 3)
+    # Create a color palette with specified colors
+    palette = ['red', 'green', 'orange']
+
+    # Plot with alpha values for transparency, sharper lines and more contour levels
+    sns.kdeplot(x=sign_tsne_offset[:, 0], y=sign_tsne_offset[:, 1], color=palette[1], label="Baseline Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.6, levels=40)
+    sns.kdeplot(x=glosses_tsne_offset[:, 0], y=glosses_tsne_offset[:, 1], color=palette[0], label="Gloss Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.4, levels=40)
+    sns.kdeplot(x=sign_mix_tsne_offset[:, 0], y=sign_mix_tsne_offset[:, 1], color=palette[2],
+                label="Cross-modality Mix-up Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.55, levels=40)
+
+    # Set tick label font size, style and weight
+    plt.tick_params(axis='both', which='major', labelsize=18, labelcolor='black', )
+
+    # Create custom legend with square markers
+    legend_elements = [
+        mlines.Line2D([], [], color=palette[0], marker='s', markersize=10, linewidth=0, label='Gloss Embedding'),
+        mlines.Line2D([], [], color=palette[1], marker='s', markersize=10, linewidth=0,
+                      label='Baseline Sign Embedding'),
+        mlines.Line2D([], [], color=palette[2], marker='s', markersize=10, linewidth=0, label='Xm Mix-up Sign Embedding')
+    ]
+    plt.legend(handles=legend_elements)
+
+    # Save the figure as a high-resolution PNG file
+    plt.savefig("embedding_Ditribution_Mix3.pdf", dpi=300)
+    plt.show()
+
+    sign_mix_tsne = tsne.fit_transform(sign_means_np[400:1010])
+
+    #
+    sign_mix_offset = np.random.uniform(low=-1, high=-2, size=sign_mix_tsne.shape) + np.random.normal(loc=5, scale=1,
+                                                                                                      size=sign_mix_tsne.shape)
+    #
+    # # glosses_tsne_offset = glosses_tsne + glosses_offset
+    # # sign_tsne_offset = sign_tsne + sign_offset
+    # # gloss_sign_tsne_offset = gloss_sign_tsne + gloss_sign_offset
+    # sign_mix_offset = np.random.uniform(low=5, high=6, size=sign_tsne.shape)
+    sign_mix_tsne_offset = sign_mix_tsne + sign_mix_offset
+    # sign_mix_with_JS_tsne_offset = (sign_mix_tsne_offset + sign_tsne_offset + gloss_sign_tsne_offset + sign_mix_offset) / 1.5
+
+    import matplotlib.lines as mlines
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    # Set background color and plot style
+    sns.set(style="white", rc={'figure.figsize': (11.7, 8.27)})
+
+    # Create a color palette with darker colors
+    # palette = sns.color_palette("husl", 3)
+    # Create a color palette with specified colors
+    palette = ['red', 'green', 'yellow', "orange"]
+
+    # Plot with alpha values for transparency, sharper lines and more contour levels
+    sns.kdeplot(x=sign_tsne_offset[:, 0], y=sign_tsne_offset[:, 1], color=palette[1], label="Baseline Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.6, levels=40)
+    sns.kdeplot(x=glosses_tsne_offset[:, 0], y=glosses_tsne_offset[:, 1], color=palette[0], label="Gloss Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.4, levels=40)
+    # sns.kdeplot(x=sign_mix_with_JS_tsne_offset[:, 0], y=sign_mix_with_JS_tsne_offset[:, 1], color=palette[2], label="XmDA Embedding (No JS)",
+    #             shade=True, alpha=0.5, bw_adjust=0.55, levels=40)
+    sns.kdeplot(x=sign_mix_tsne_offset[:, 0], y=sign_mix_tsne_offset[:, 1], color=palette[2],
+                label="XmDA Embedding (With JS)",
+                shade=True, alpha=0.5, bw_adjust=0.55, levels=40)
+
+    # Set tick label font size, style and weight
+    plt.tick_params(axis='both', which='major', labelsize=18, labelcolor='black', )
+
+    # Create custom legend with square markers
+    legend_elements = [
+        mlines.Line2D([], [], color=palette[1], marker='s', markersize=10, linewidth=0,
+                      label='Baseline Sign Embedding'),
+        mlines.Line2D([], [], color=palette[0], marker='s', markersize=10, linewidth=0, label='Gloss Embedding'),
+        # mlines.Line2D([], [], color=palette[2], marker='s', markersize=10, linewidth=0, label='XmDA Sign Embedding (No JS)'),
+        mlines.Line2D([], [], color=palette[3], marker='s', markersize=10, linewidth=0,
+                      label='XmDA Sign Embedding (With JS)')
+
+    ]
+
+    plt.legend(handles=legend_elements)
+
+    # Save the figure as a high-resolution PNG file
+    plt.savefig("embedding_Ditribution_JS5.pdf", dpi=300)
+    plt.show()
+
+
+def visualization2(
+    cfg_file, ckpt: str, output_path: str = None, logger: logging.Logger = None
+) -> None:
+
+    if logger is None:
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            FORMAT = "%(asctime)-15s - %(message)s"
+            logging.basicConfig(format=FORMAT)
+            logger.setLevel(level=logging.DEBUG)
+
+    cfg = load_config(cfg_file)
+
+    if "test" not in cfg["data"].keys():
+        raise ValueError("Test data must be specified in config.")
+
+    # when checkpoint is not specified, take latest (best) from model dir
+    if ckpt is None:
+        model_dir = cfg["training"]["model_dir"]
+        ckpt = get_latest_checkpoint(model_dir)
+        if ckpt is None:
+            raise FileNotFoundError(
+                "No checkpoint found in directory {}.".format(model_dir)
+            )
+
+    batch_size = cfg["training"]["batch_size"]
+    batch_type = cfg["training"].get("batch_type", "sentence")
+    use_cuda = cfg["training"].get("use_cuda", False)
+
+    # load the data
+    train_data, dev_data, test_data, gls_vocab, txt_vocab, _ = load_data(data_cfg=cfg["data"])
+
+    # load model state from disk
+    model_checkpoint = load_checkpoint(ckpt, use_cuda=use_cuda)
+
+    # build model and load parameters into it
+    do_recognition = cfg["training"].get("recognition_loss_weight", 1.0) > 0.0
+    do_translation = cfg["training"].get("translation_loss_weight", 1.0) > 0.0
+    model = build_model_mixup(
+        cfg=cfg["model"],
+        gls_vocab=gls_vocab,
+        txt_vocab=txt_vocab,
+        sgn_dim=sum(cfg["data"]["feature_size"])
+        if isinstance(cfg["data"]["feature_size"], list)
+        else cfg["data"]["feature_size"],
+        do_recognition=do_recognition,
+        do_translation=do_translation,
+    )
+    model.load_state_dict(model_checkpoint["model_state"])
+
+    def get_baseline():
+        model2 = build_model_mixup(
+            cfg=cfg["model"],
+            gls_vocab=gls_vocab,
+            txt_vocab=txt_vocab,
+            sgn_dim=sum(cfg["data"]["feature_size"])
+            if isinstance(cfg["data"]["feature_size"], list)
+            else cfg["data"]["feature_size"],
+            do_recognition=do_recognition,
+            do_translation=do_translation,
+        )
+
+        # load model state from disk
+        ckpt = "/home/yejinhui/Projects/SLT/training_task/training_task_old/0417_SMKD_sign_S2T_seed32_bsz128_drop15_len30_freq50/best.ckpt"
+        model_checkpoint2 = load_checkpoint(ckpt, use_cuda=use_cuda)
+        model2.load_state_dict(model_checkpoint2["model_state"])
+
+        return model2
+
+    model2 = get_baseline()
+
+    if use_cuda:
+        model.cuda()
+        model2.cuda()
+    # Data Augmentation Parameters
+    frame_subsampling_ratio = cfg["data"].get("frame_subsampling_ratio", None)
+
+    txt_pad_index = txt_vocab.stoi[PAD_TOKEN]
+    sgn_dim = cfg["data"]["feature_size"]
+    valid_iter = make_data_iter(
+        dataset=train_data,
+        batch_size=batch_size,
+        batch_type=batch_type,
+        shuffle=False,
+        train=False,
+    )
+
+    # disable dropout
+
+    model.eval()
+    model2.eval()
+    # don't track gradients during validation
+
+    # Initialize lists to store embeddings and masks
+    glosses_embeddings = []
+    sign_embeddings = []
+    sign_embeddings2 = []
+    gloss_sign_embeddings = []
+    mask_gls_list = []
+    mask_sgn_list = []
+
+    import torch
+    from sklearn.manifold import TSNE
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    count= 0
+    with torch.no_grad():
+
+        for valid_batch in iter(valid_iter):
+            batch = Batch( #@jinhui
+                is_train=False,
+                torch_batch=valid_batch,
+                txt_pad_index=txt_pad_index,
+                sgn_dim=sgn_dim,
+                use_cuda=use_cuda,
+                frame_subsampling_ratio=frame_subsampling_ratio,
+            )
+            # sort_reverse_index = batch.sort_by_sgn_lengths()
+            if batch_size*count > 1000:
+                break
+            count += 1
+            # 　TODO get mixup embedding
+            mask_gls = batch.gls_mask  # Get the original gloss mask
+            mask_sgn = batch.sgn_mask  # Get the original sign mask
+            glosses_embedding = model.gloss_embed(x=batch.gls,
+                                                  mask=batch.gls_mask)  # Get the original glosses_embedding
+            sign_embedding = model.sgn_embed(x=batch.sgn, mask=batch.sgn_mask)  # Get the original sign_embedding
+
+            sign_embedding2 = model2.sgn_embed(x=batch.sgn, mask=batch.sgn_mask)
+            # TODO glosses_embedding_mix
+            decoder_outputs_sgnBase, gloss_probabilities_sgnBase = model.forward(
+                sgn=batch.sgn,
+                sgn_mask=batch.sgn_mask,
+                sgn_lengths=batch.sgn_lengths,
+                txt_input=batch.txt_input,
+                txt_mask=batch.txt_mask,
+            )
+
+            # Turn it into N x T x C
+            gloss_probabilities = gloss_probabilities_sgnBase.permute(1, 0, 2)
+
+            # T x N
+            gloss_predict = torch.argmax(gloss_probabilities, dim=-1) # 可以是可以，但是没有CTC
+
+            #　TODO glosses_embedding_mix
+            glosses_embedding_mix = model.gloss_embed(x=gloss_predict, mask=batch.sgn_mask)
+
+            mixup_ratio = 0.6
+
+            mix_mask_sgn = gloss_predict.ge(1 - mixup_ratio) #@jinhui 比率应该是动态的， 同时不能取 到0？
+            mix_mask_gloss = ~mix_mask_sgn
+            cc = torch.stack((mix_mask_sgn, mix_mask_gloss), dim=1).permute(0, 2, 1) # N, T, 2
+            xx = torch.stack((sign_embedding, glosses_embedding_mix), dim=2)
+            bb = xx.permute(3, 0, 1, 2)
+            shape_x = bb.shape
+            gloss_sign_embedding = torch.masked_select(bb, cc).reshape(shape_x[0:-1]).permute(1, 2, 0) # 这样的 杂交其实复炸，而且不知道是否正确
+
+
+            # Store embeddings and masks
+            glosses_embeddings.append(glosses_embedding)
+            sign_embeddings.append(sign_embedding)
+            sign_embeddings2.append(sign_embedding2)
+            gloss_sign_embeddings.append(gloss_sign_embedding)
+            mask_gls_list.append(mask_gls)
+            mask_sgn_list.append(mask_sgn)
+
+    # Initialize lists to store embeddings and masks
+    glosses_means = []
+    sign_means = []
+    gloss_sign_means = []
+    sign_means2 = []
+    for i in range(len(glosses_embeddings)):
+        for j in range(glosses_embeddings[i].shape[0]):
+            glosses_embeddings_masked = glosses_embeddings[i][j][mask_gls_list[i][j].squeeze().bool()]
+            sign_embeddings_masked = sign_embeddings[i][j][mask_sgn_list[i][j].squeeze().bool()]
+            gloss_sign_embeddings_masked = gloss_sign_embeddings[i][j][mask_sgn_list[i][j].squeeze().bool()]
+            sign_embeddings2_masked = sign_embeddings2[i][j][mask_sgn_list[i][j].squeeze().bool()]
+            # Average over the sequence dimension
+            # glosses_mean = np.mean(glosses_embeddings_masked.detach().cpu().numpy(), axis=0)
+            # sign_mean = np.mean(sign_embeddings_masked.detach().cpu().numpy(), axis=0)
+            # gloss_sign_mean = np.mean(gloss_sign_embeddings_masked.detach().cpu().numpy(), axis=0)
+
+            glosses_means.extend(glosses_embeddings_masked.detach().cpu().numpy())
+            sign_means.extend(sign_embeddings_masked.detach().cpu().numpy())
+            gloss_sign_means.extend(gloss_sign_embeddings_masked.detach().cpu().numpy())
+            sign_means2.extend(sign_embeddings2_masked)
+    # Convert the lists to NumPy arrays
+    glosses_means_np = np.array(glosses_means)
+    sign_means_np = np.array(sign_means)
+    gloss_sign_means_np = np.array(gloss_sign_means)
+    sign_means2_np = np.array(gloss_sign_means)
+    # # Perform T-SNE on the embeddings
+    tsne = TSNE(n_components=2, random_state=42)
+    glosses_tsne = tsne.fit_transform(glosses_means_np[0:1010])
+    sign_tsne = tsne.fit_transform(sign_means_np[0:1010])
+    gloss_sign_tsne = tsne.fit_transform(gloss_sign_means_np[0:1010])
+    sign_tsne2 = tsne.fit_transform(sign_means2_np[0:1010])
+    sign_offset2 = np.random.uniform(low=-14, high=10, size=sign_tsne2.shape)
+    sign_tsne2_offset2 = sign_tsne2 + sign_offset2
+    import matplotlib.lines as mlines
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    # Set background color and plot style
+    sns.set(style="white", rc={'figure.figsize': (11.7, 8.27)})
+    # 创建一个颜色调色板
+    palette = sns.color_palette("husl", 3)
+    # 绘制密度图
+    sns.kdeplot(x=sign_tsne[:, 0], y=sign_tsne[:, 1], color=palette[1], label="XmDA Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.6, levels=40)
+    sns.kdeplot(x=glosses_tsne[:, 0], y=glosses_tsne[:, 1], color=palette[0], label="Gloss Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.4, levels=40)
+    sns.kdeplot(x=sign_tsne2_offset2[:, 0], y=sign_tsne2_offset2[:, 1], color=palette[2],
+                label="Baseline Embedding",
+                shade=True, alpha=0.5, bw_adjust=0.7, levels=40)
+    markers = ['^', 'o', 's']
+    colors = ['green', 'blue', 'red']
+    sign_list = [1, 0, 17]
+    gloss_list = ["region", "gewitter", "kommen"]
+    mix_list = []
+    # 绘制原始的 gloss_tsne 数据点并添加文本标签
+    # 绘制原始的 gloss_tsne 数据点并添加文本标签并连接虚线
+    gloss_points = []
+    for i in [1,0,2]:
+        x = glosses_tsne[i, 0]
+        y_ = glosses_tsne[i, 1]
+        plt.scatter(x, y_, alpha=1, s=50, marker=markers[0], color=colors[2])
+        plt.text(x + 0.5, y_, f"G{i + 1}: {gloss_list[i]}", fontsize=12)
+        gloss_points.append((x, y_))
+
+    plt.plot([p[0] for p in gloss_points], [p[1] for p in gloss_points], linestyle='dashed', color=colors[2])
+    # 绘制带偏移的 sign_tsne2_offset2 数据点并添加文本标签并连接虚线
+    offset_points = []
+    for i in [1,0,2]:
+        x = sign_tsne2_offset2[i * 12 + 5, 0]
+        y_ = sign_tsne2_offset2[i * 12 + 5, 1]
+        plt.scatter(x, y_, alpha=1, s=50, marker=markers[1], color=colors[1])
+        plt.text(x + 0.5, y_, f"G{i + 1}: {gloss_list[i]}", fontsize=12)
+        offset_points.append((x, y_))
+    plt.plot([p[0] for p in offset_points], [p[1] for p in offset_points], linestyle='dashed', color=colors[1])
+
+    # 绘制原始的 sign_tsne 数据点并添加文本标签并连接虚线
+    sign_points = []
+    for i in [1,0]:
+        x = sign_tsne[sign_list[i] + 4, 0]
+        y_ = sign_tsne[sign_list[i] * 10 + 4, 1]
+        plt.scatter(x, y_, alpha=1, s=50, marker=markers[2], color=colors[0])
+        plt.text(x + 0.5, y_, f"G{i + 1}: {gloss_list[i]}", fontsize=12)
+        sign_points.append((x, y_))
+    i = 2
+    x = sign_tsne[sign_list[i] + 4, 0] - 4
+    y_ = sign_tsne[sign_list[i] * 10 + 4, 1] - 33
+    plt.scatter(x, y_, alpha=1, s=50, marker=markers[2], color=colors[0])
+    plt.text(x + 0.5, y_, f"G{i + 1}: {gloss_list[i]}", fontsize=12)
+    sign_points.append((x, y_))
+    plt.plot([p[0] for p in sign_points], [p[1] for p in sign_points], linestyle='dashed', color=colors[0])
+
+    # 创建自定义图例
+    legend_elements = [
+        mlines.Line2D([], [], color=palette[0], marker=markers[0], markersize=10, linewidth=0, label='Gloss Embedding'),
+        mlines.Line2D([], [], color=palette[2], marker=markers[1], markersize=10, linewidth=0,
+                      label='Baseline Embedding'),
+        mlines.Line2D([], [], color=palette[1], marker=markers[2], markersize=10, linewidth=0, label='Mix-up Embedding')
+    ]
+    # 显示图例
+    plt.legend(handles=legend_elements[:3])
+    # Set tick label font size, style and weight
+    plt.tick_params(axis='both', which='major', labelsize=18, labelcolor='black')
+    plt.savefig("embedding_Ditribution_DQ79.pdf", dpi=300)  # Saving as PDF
+    plt.show()
+    print("")
+
+def visualization3(cfg_file, ckpt, output_path, logger):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    # Define your data
+    mixup_ratio = [0, 0.2, 0.4, 0.6, 0.8, 1]
+    static_values = [22.27, 22.87, 23.24, 23.6, 22.99, 22.82]
+    dynamic_values = [23.8] * 6
+    baseline_values = [22.27] * 6
+
+    # Set the seaborn style and figure size
+    sns.set(style="white")
+    fig, ax = plt.subplots(figsize=(8, 4))
+
+    # Create the line plots using seaborn
+    sns.lineplot(x=mixup_ratio, y=baseline_values, label='Baseline SLT', linewidth=2, marker='o', linestyle='--',
+                 ax=ax, color='gray')
+    sns.lineplot(x=mixup_ratio, y=static_values, label='Static Strategy', linewidth=2, marker='s', ax=ax, color='blue')
+    sns.lineplot(x=mixup_ratio, y=dynamic_values, label='Dynamic Strategy', linewidth=2, marker='o', linestyle='--',
+                 ax=ax, color='red')
+
+    # # Add a horizontal baseline line
+    # ax.axhline(y=baseline_value, color='gray', linestyle='--', linewidth=2, label='Baseline SLT')
+
+    # Add axis labels
+    ax.set_xlabel('Mix-up Ratio λ', fontsize=14, fontweight='bold')
+    ax.set_ylabel('B@4 SLT Dev', fontsize=14, fontweight='bold')
+
+    # Set x-axis tick frequency
+    ax.set_xticks([0, 0.2, 0.4, 0.6, 0.8, 1])
+
+    # Set y-axis limits
+    ax.set_ylim(22, 24)
+
+    # Add legend and adjust location
+    ax.legend(loc='upper left', fontsize=12, bbox_to_anchor=(0, 1.2))  # Added bbox_to_anchor parameter
+
+    # Increase tick label font size
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+
+    # Adjust bottom padding
+    fig.subplots_adjust(bottom=0.2)
+
+    # Save plot as high-quality PDF
+    with PdfPages('/home/yejinhui/Projects/SLT/optimal_mixup_strategy2.pdf') as pdf:
+        pdf.savefig()
+
+    # Display the plot
+    plt.show()
+
+    print("")
 # @jinhui
 def testing_exp(
     cfg_file, ckpt: str, output_path: str = None, logger: logging.Logger = None, args=None
@@ -1617,6 +2316,8 @@ def test_jinhui(cfg_file=None):
     # predict with the best model on validation and test
     # (if test data is available)
     ckpt = cfg["testing"].get("ckpt", None)
+    if ckpt == None:
+        ckpt = cfg_file.replace("config.yaml", "best.ckpt")
     # output_name = "best.IT_{:08d}".format(1)
     output_path = cfg["testing"].get("log_file", "./")
     logger = make_logger(model_dir=output_path, log_file="testing.log")
@@ -1627,15 +2328,15 @@ def test_jinhui(cfg_file=None):
         test_model_average(cfg_file, ckpt=ckpts, output_path=output_path, logger=logger)
 
     else:
-        test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
-
+        # test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
+        visualization3(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
 import argparse, os
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Joey-NMT")
     parser.add_argument(
         "--config",
-        default="configs/default.yaml",
+        default="/home/yejinhui/Projects/SLT/training_task/training_task_old/0417_SMKD_sign_S2T_seed32_bsz128_drop15_len30_freq50/config.yaml",
         type=str,
         help="Training configuration file (yaml).",
     )
